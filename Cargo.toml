@@ -5,8 +5,12 @@ edition = "2021"
 license = "MIT"
 description = "A ratatui markdown renderer with image placeholders, code blocks, and styled headings"
 readme = "README.md"
+repository = "https://github.com/Sylviromi/limner"
+documentation = "https://docs.rs/limner"
+authors = ["Sylviromi"]
+rust-version = "1.81"
 keywords = ["ratatui", "markdown", "tui", "terminal", "renderer"]
-categories = ["command-line-utilities", "rendering"]
+categories = ["rendering", "command-line-interface"]
 
 [features]
 default = []

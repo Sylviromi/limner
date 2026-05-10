@@ -51,16 +51,29 @@ limner = { version = "0.1", features = ["image-protocol"] }
 ```
 
 Images in markdown (`![alt](url)`) are tracked as `ImageInfo` metadata.
-After drawing the ratatui frame, call `render_images()` to blit visible images:
+After drawing the ratatui frame, call `prepare_inline_images()` to insert
+`Image` widgets at the correct positions:
 
 ```rust
-use limner::{render_markdown, render_image::render_images};
+use limner::{render_markdown, render_image};
+use std::collections::HashMap;
 
 let result = render_markdown(&content, &style, width);
-terminal.draw(|f| { /* render result.lines */ })?;
+let mut protocol_cache = HashMap::new();
+let picker = render_image::Picker::from_query_stdio()?;
+let font_size = picker.font_size();
+let placements = render_image::prepare_inline_images(
+    &mut result.lines,
+    &result.images,
+    &image_cache,
+    &mut protocol_cache,
+    &picker,
+    &font_size,
+    content_width,
+    6,
+);
 
-// Must be called AFTER terminal.draw() — viuer writes directly to stdout.
-render_images(&result.images, content_area, scroll, &image_cache);
+// Then render Image widgets inside terminal.draw() using the placements.
 ```
 
 The caller is responsible for populating the `image_cache`

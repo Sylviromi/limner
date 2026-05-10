@@ -1,5 +1,5 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::layout;
@@ -83,7 +83,7 @@ struct Renderer<'a> {
     links: Vec<LinkInfo>,
 
     spans: Vec<Span<'static>>,
-    mods: Vec<Modifier>,
+    mods: Vec<Style>,
     block_style: Style,
 
     link_url: Option<String>,
@@ -116,8 +116,8 @@ impl<'a> Renderer<'a> {
             Event::Code(text) => {
                 let s = text.to_string();
                 let mut style = self.style.inline_code;
-                for m in &self.mods {
-                    style = style.add_modifier(*m);
+                for patch in &self.mods {
+                    style = style.patch(*patch);
                 }
                 self.spans.push(Span::styled(s.clone(), style));
                 if self.link_url.is_some() {
@@ -159,7 +159,11 @@ impl<'a> Renderer<'a> {
     fn start(&mut self, tag: Tag<'a>) {
         match tag {
             Tag::Paragraph => {
-                self.block_style = self.style.paragraph;
+                self.block_style = if self.in_blockquote > 0 {
+                    self.style.quote
+                } else {
+                    self.style.paragraph
+                };
                 self.mods.clear();
             }
             Tag::Heading { level, .. } => {
@@ -203,12 +207,16 @@ impl<'a> Renderer<'a> {
                     }
                 }
             }
-            Tag::Emphasis => self.mods.push(Modifier::ITALIC),
-            Tag::Strong => self.mods.push(Modifier::BOLD),
-            Tag::Strikethrough => self.mods.push(Modifier::CROSSED_OUT),
+            Tag::Emphasis => self.mods.push(self.style.italic),
+            Tag::Strong => self.mods.push(self.style.bold),
+            Tag::Strikethrough => self.mods.push(self.style.strikethrough),
             Tag::Link { dest_url, .. } => {
                 self.link_url = Some(dest_url.into_string());
                 self.link_text.clear();
+                if !self.style.link_prefix.is_empty() {
+                    self.spans
+                        .push(Span::styled(self.style.link_prefix.to_string(), self.current_style()));
+                }
             }
             Tag::Image { dest_url, .. } => {
                 self.is_image = true;
@@ -299,8 +307,8 @@ impl<'a> Renderer<'a> {
 
     fn current_style(&self) -> Style {
         let mut s = self.block_style;
-        for m in &self.mods {
-            s = s.add_modifier(*m);
+        for patch in &self.mods {
+            s = s.patch(*patch);
         }
         if self.link_url.is_some() {
             s = s.patch(self.style.link);
