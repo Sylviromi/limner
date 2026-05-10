@@ -1,0 +1,27 @@
+[package]
+name = "limner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A ratatui markdown renderer with image placeholders, code blocks, and styled headings"
+readme = "README.md"
+keywords = ["ratatui", "markdown", "tui", "terminal", "renderer"]
+categories = ["command-line-utilities", "rendering"]
+
+[features]
+default = []
+image-protocol = ["dep:ratatui-image", "dep:image"]
+
+[dependencies]
+pulldown-cmark = "0.13"
+ratatui = "0.30"
+unicode-width = "0.2"
+
+ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"], optional = true }
+
+[dev-dependencies]
+crossterm = "0.29"
+ureq = "2"
+image = "0.25"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
