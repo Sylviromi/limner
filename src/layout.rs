@@ -36,13 +36,11 @@ pub fn wrap_code_block(code: &str, width: usize, style: Style, bg: Color) -> Vec
 
 fn make_code_line(text: &str, width: usize, style: Style, bg: Color) -> Line<'static> {
     let padding = width.saturating_sub(UnicodeWidthStr::width(text));
-    let mut spans = Vec::with_capacity(2);
-    spans.push(Span::styled(text.to_string(), style.bg(bg)));
+    let mut s = text.to_string();
     if padding > 0 {
-        let blank = " ".repeat(padding);
-        spans.push(Span::styled(blank, Style::default().bg(bg)));
+        s.push_str(&" ".repeat(padding));
     }
-    Line::from(spans)
+    Line::from(Span::styled(s, style.bg(bg)))
 }
 
 /// Find the byte index to break a line so that its displayed width ≤ `max_width`.
