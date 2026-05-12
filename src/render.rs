@@ -1,9 +1,11 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use ratatui::layout::Alignment as RatatuiAlignment;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::layout;
-use crate::style::MarkdownStyle;
+use crate::style::{Alignment, MarkdownStyle};
 
 /// Metadata about an image encountered during rendering.
 #[derive(Debug, Clone)]
@@ -52,6 +54,8 @@ pub fn render_markdown(input: &str, style: &MarkdownStyle, width: u16) -> Render
         spans: Vec::new(),
         mods: Vec::new(),
         block_style: style.paragraph,
+        block_alignment: Alignment::Left,
+        pen_img_line: None,
         link_url: None,
         link_text: String::new(),
         is_image: false,
@@ -85,6 +89,8 @@ struct Renderer<'a> {
     spans: Vec<Span<'static>>,
     mods: Vec<Style>,
     block_style: Style,
+    block_alignment: Alignment,
+    pen_img_line: Option<usize>,
 
     link_url: Option<String>,
     link_text: String,
@@ -102,6 +108,11 @@ struct Renderer<'a> {
 enum ListCounter {
     Bullet,
     Ordered(u64),
+}
+
+struct StyledWord {
+    text: String,
+    style: Style,
 }
 
 // ── Event handling ───────────────────────────────────────────────────────────
@@ -143,8 +154,9 @@ impl<'a> Renderer<'a> {
                 for _ in 0..w {
                     line.push(self.style.hr_char);
                 }
-                self.output
-                    .push(Line::from(Span::styled(line, self.style.hr_style)));
+                let mut l = Line::from(Span::styled(line, self.style.hr_style));
+                l.alignment = Self::map_alignment(self.block_alignment);
+                self.output.push(l);
             }
             Event::TaskListMarker(checked) => {
                 let mark = if checked { "☑ " } else { "☐ " };
@@ -164,23 +176,32 @@ impl<'a> Renderer<'a> {
                 } else {
                     self.style.paragraph
                 };
+                self.block_alignment = if self.in_blockquote > 0 {
+                    self.style.quote_alignment
+                } else {
+                    self.style.paragraph_alignment
+                };
                 self.mods.clear();
             }
             Tag::Heading { level, .. } => {
-                self.block_style = match level {
-                    HeadingLevel::H1 => self.style.heading_1,
-                    HeadingLevel::H2 => self.style.heading_2,
-                    HeadingLevel::H3 => self.style.heading_3,
-                    _ => self.style.heading_3,
+                let (sty, aln) = match level {
+                    HeadingLevel::H1 => (self.style.heading_1, self.style.heading_1_alignment),
+                    HeadingLevel::H2 => (self.style.heading_2, self.style.heading_2_alignment),
+                    HeadingLevel::H3 => (self.style.heading_3, self.style.heading_3_alignment),
+                    _ => (self.style.heading_3, self.style.heading_3_alignment),
                 };
+                self.block_style = sty;
+                self.block_alignment = aln;
                 self.mods.clear();
             }
             Tag::BlockQuote(_) => {
                 self.flush_paragraph(self.style.paragraph);
                 self.in_blockquote += 1;
+                self.block_alignment = self.style.quote_alignment;
             }
             Tag::CodeBlock(_) => {
                 self.flush_paragraph(self.style.paragraph);
+                self.block_alignment = self.style.code_block_alignment;
                 self.code_buf = Some(String::new());
             }
             Tag::List(start) => {
@@ -214,8 +235,10 @@ impl<'a> Renderer<'a> {
                 self.link_url = Some(dest_url.into_string());
                 self.link_text.clear();
                 if !self.style.link_prefix.is_empty() {
-                    self.spans
-                        .push(Span::styled(self.style.link_prefix.to_string(), self.current_style()));
+                    self.spans.push(Span::styled(
+                        self.style.link_prefix.to_string(),
+                        self.current_style(),
+                    ));
                 }
             }
             Tag::Image { dest_url, .. } => {
@@ -247,12 +270,13 @@ impl<'a> Renderer<'a> {
             }
             TagEnd::CodeBlock => {
                 if let Some(buf) = self.code_buf.take() {
-                    let lines = layout::wrap_code_block(
+                    let mut lines = layout::wrap_code_block(
                         &buf,
                         self.width as usize,
                         self.style.code_block,
                         self.style.code_block_bg,
                     );
+                    self.apply_alignment(&mut lines);
                     self.output.extend(lines);
                 }
             }
@@ -290,10 +314,30 @@ impl<'a> Renderer<'a> {
 
     fn on_text(&mut self, text: &str) {
         if self.is_image {
-            self.spans.push(Span::raw(text.to_string()));
             self.pending_img_alt.push_str(text);
             return;
         }
+
+        // If the previous event was an image that got its own line,
+        // absorb leading punctuation so it stays attached to the
+        // image placeholder instead of starting the next paragraph.
+        let text = if let Some(img_line) = self.pen_img_line.take() {
+            let punct_count = text
+                .chars()
+                .take_while(|c| c.is_ascii_punctuation())
+                .count();
+            if punct_count > 0 {
+                if let Some(line) = self.output.get_mut(img_line) {
+                    line.spans.push(Span::raw(text[..punct_count].to_string()));
+                }
+                &text[punct_count..]
+            } else {
+                text
+            }
+        } else {
+            text
+        };
+
         if let Some(buf) = &mut self.code_buf {
             buf.push_str(text);
             return;
@@ -330,42 +374,155 @@ impl<'a> Renderer<'a> {
     fn finalize_image(&mut self) {
         let url = self.link_url.take().unwrap_or_default();
         let alt = std::mem::take(&mut self.pending_img_alt);
+
         let display = if alt.is_empty() {
             format!("{}image", self.style.image_prefix)
         } else {
             format!("{}{}", self.style.image_prefix, alt)
         };
+
+        self.is_image = false;
+
+        // Flush any text accumulated before the image so the image placeholder
+        // gets its own line.  This is required by `prepare_inline_images`
+        // (image-protocol) which replaces the placeholder line with the actual
+        // image — if the placeholder shared a line with surrounding text, that
+        // text would be destroyed.
+        let had_content = !self.spans.is_empty() || self.item_prefix.is_some();
+        if had_content {
+            self.flush_paragraph(self.current_style());
+        }
+
+        let mut line = Line::from(vec![Span::styled(display, self.style.image)]);
+        line.alignment = Self::map_alignment(self.block_alignment);
+        self.output.push(line);
+        let current = self.output.len() - 1;
+
+        if had_content {
+            // Text after the image will arrive in the next `on_text` call;
+            // remember this line index so we can absorb leading punctuation
+            // into the image line.
+            self.pen_img_line = Some(current);
+        }
+
         self.images.push(ImageInfo {
-            line_index: usize::MAX,
+            line_index: current,
             url,
             alt,
         });
-        self.spans.push(Span::styled(display, self.style.image));
-        self.is_image = false;
     }
 
     // ── line flushing ──────────────────────────────────────────
 
     fn flush_paragraph(&mut self, base_style: Style) {
-        if self.spans.is_empty() && self.item_prefix.is_none() {
+        let spans = std::mem::take(&mut self.spans);
+        if spans.is_empty() && self.item_prefix.is_none() {
             return;
         }
 
-        let mut prefix = String::new();
-        for _ in 0..self.in_blockquote {
-            prefix.push_str(self.style.quote_indicator);
+        match self.block_alignment {
+            Alignment::Justify => self.flush_justified(spans, base_style),
+            _ => self.flush_simple(spans, base_style),
         }
-        if let Some(ref item) = self.item_prefix {
-            prefix.push_str(item);
-        }
+    }
+
+    fn flush_simple(&mut self, spans: Vec<Span<'static>>, base_style: Style) {
+        let prefix = self.build_first_prefix();
 
         let mut line_spans: Vec<Span<'static>> = Vec::new();
         if !prefix.is_empty() {
             line_spans.push(Span::styled(prefix, base_style));
         }
-        line_spans.append(&mut self.spans);
-        self.output.push(Line::from(line_spans));
-        let current = self.output.len() - 1;
+        line_spans.extend(spans);
+
+        let mut line = Line::from(line_spans);
+        line.alignment = match self.block_alignment {
+            Alignment::Center => Some(RatatuiAlignment::Center),
+            Alignment::Right => Some(RatatuiAlignment::Right),
+            _ => None,
+        };
+        self.push_line(line);
+    }
+
+    fn flush_justified(&mut self, spans: Vec<Span<'static>>, base_style: Style) {
+        let first_prefix = self.build_first_prefix();
+        let cont_prefix = self.build_cont_prefix();
+
+        let first_pw = UnicodeWidthStr::width(first_prefix.as_str());
+        let cont_pw = UnicodeWidthStr::width(cont_prefix.as_str());
+
+        let words = Self::spans_to_words(&spans);
+        if words.is_empty() {
+            let mut line = Line::from(Span::styled(first_prefix, base_style));
+            line.alignment = None;
+            self.push_line(line);
+            return;
+        }
+
+        // Subtract 1 as a safety margin: ratatui's WordWrapper uses `>=` when
+        // checking whether a line overflows the widget width, so a line exactly
+        // as wide as the widget would be re-wrapped (moving its last word to the
+        // next visual line).  Keeping one column shorter avoids that.
+        let first_avail = (self.width as usize)
+            .saturating_sub(first_pw)
+            .saturating_sub(1)
+            .max(1);
+        let cont_avail = (self.width as usize)
+            .saturating_sub(cont_pw)
+            .saturating_sub(1)
+            .max(1);
+
+        let word_lines = self.justify_word_wrap(&words, first_avail, cont_avail);
+        let total = word_lines.len();
+
+        for (i, wl) in word_lines.iter().enumerate() {
+            let prefix = if i == 0 { &first_prefix } else { &cont_prefix };
+            let avail = if i == 0 { first_avail } else { cont_avail };
+            let is_last = i == total - 1;
+
+            let mut line_spans: Vec<Span<'static>> = Vec::new();
+            if !prefix.is_empty() {
+                line_spans.push(Span::styled(prefix.to_string(), base_style));
+            }
+
+            if is_last {
+                for (j, word) in wl.iter().enumerate() {
+                    if j > 0 {
+                        line_spans.push(Span::raw(" "));
+                    }
+                    line_spans.push(Span::styled(word.text.clone(), word.style));
+                }
+            } else {
+                let gaps = wl.len().saturating_sub(1);
+                if gaps == 0 {
+                    line_spans.push(Span::styled(wl[0].text.clone(), wl[0].style));
+                } else {
+                    let word_widths: usize = wl
+                        .iter()
+                        .map(|w| UnicodeWidthStr::width(w.text.as_str()))
+                        .sum();
+                    let text_width = word_widths + gaps;
+                    let deficit = avail.saturating_sub(text_width);
+                    let extra_per = deficit / gaps;
+                    let remainder = deficit % gaps;
+
+                    for (j, word) in wl.iter().enumerate() {
+                        line_spans.push(Span::styled(word.text.clone(), word.style));
+                        if j < gaps {
+                            let spaces = 1 + extra_per + if j < remainder { 1 } else { 0 };
+                            line_spans.push(Span::raw(" ".repeat(spaces)));
+                        }
+                    }
+                }
+            }
+
+            self.push_line(Line::from(line_spans));
+        }
+    }
+
+    fn push_line(&mut self, line: Line<'static>) {
+        let current = self.output.len();
+        self.output.push(line);
         for img in self
             .images
             .iter_mut()
@@ -381,6 +538,91 @@ impl<'a> Renderer<'a> {
             .take_while(|l| l.line_index == usize::MAX)
         {
             link.line_index = current;
+        }
+    }
+
+    fn build_first_prefix(&self) -> String {
+        let mut p = String::new();
+        for _ in 0..self.in_blockquote {
+            p.push_str(self.style.quote_indicator);
+        }
+        if let Some(ref item) = self.item_prefix {
+            p.push_str(item);
+        }
+        p
+    }
+
+    fn build_cont_prefix(&self) -> String {
+        let mut p = String::new();
+        for _ in 0..self.in_blockquote {
+            p.push_str(self.style.quote_indicator);
+        }
+        p
+    }
+
+    fn spans_to_words(spans: &[Span<'static>]) -> Vec<StyledWord> {
+        let mut words = Vec::new();
+        for span in spans {
+            for word in span.content.split_ascii_whitespace() {
+                if !word.is_empty() {
+                    words.push(StyledWord {
+                        text: word.to_string(),
+                        style: span.style,
+                    });
+                }
+            }
+        }
+        words
+    }
+
+    fn justify_word_wrap<'b>(
+        &self,
+        words: &'b [StyledWord],
+        first_avail: usize,
+        cont_avail: usize,
+    ) -> Vec<Vec<&'b StyledWord>> {
+        let mut lines: Vec<Vec<&StyledWord>> = Vec::new();
+        let mut current: Vec<&StyledWord> = Vec::new();
+        let mut current_width: usize = 0;
+
+        for word in words {
+            let w = UnicodeWidthStr::width(word.text.as_str());
+            let avail = if lines.is_empty() {
+                first_avail
+            } else {
+                cont_avail
+            };
+
+            if current.is_empty() {
+                current.push(word);
+                current_width = w;
+            } else if current_width + 1 + w <= avail {
+                current.push(word);
+                current_width += 1 + w;
+            } else {
+                lines.push(current);
+                current = vec![word];
+                current_width = w;
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+        lines
+    }
+
+    fn map_alignment(aln: Alignment) -> Option<RatatuiAlignment> {
+        match aln {
+            Alignment::Center => Some(RatatuiAlignment::Center),
+            Alignment::Right => Some(RatatuiAlignment::Right),
+            _ => None,
+        }
+    }
+
+    fn apply_alignment(&self, lines: &mut [Line<'static>]) {
+        let aln = Self::map_alignment(self.block_alignment);
+        for line in lines.iter_mut() {
+            line.alignment = aln;
         }
     }
 }
@@ -492,5 +734,48 @@ mod tests {
     fn list_unordered() {
         let result = render_markdown("- one\n- two", &default_style(), 80);
         assert_eq!(result.lines.len(), 2);
+    }
+
+    #[test]
+    fn justify_paragraph_wraps_and_fits_width() {
+        let style = MarkdownStyle {
+            paragraph_alignment: Alignment::Justify,
+            ..default_style()
+        };
+        let result = render_markdown(
+            "This long paragraph is justified. Every line except the last is padded with \
+             extra spaces so that both the left and right edges are perfectly aligned. \
+             This is the classic newspaper-style typesetting. The last line stays \
+             left-aligned as is conventional.",
+            &style,
+            60,
+        );
+        assert!(result.lines.len() >= 3, "should wrap to multiple lines");
+        for (i, l) in result.lines.iter().enumerate() {
+            let w = UnicodeWidthStr::width(l.to_string().as_str());
+            assert!(w <= 60, "line {} width {} exceeds max 60", i, w);
+        }
+    }
+
+    #[test]
+    fn justify_with_image_no_duplicate_words() {
+        let style = MarkdownStyle {
+            paragraph_alignment: Alignment::Justify,
+            ..default_style()
+        };
+        let text = "An image: ![alt](img.png). More text.";
+        let result = render_markdown(text, &style, 80);
+        let combined: String = result
+            .lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        // "alt" should appear only ONCE (from the placeholder), not twice
+        assert_eq!(
+            combined.matches("alt").count(),
+            1,
+            "alt text should not be duplicated"
+        );
     }
 }
