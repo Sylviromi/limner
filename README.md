@@ -1,6 +1,7 @@
 # limner
 
-A [ratatui] markdown renderer with image placeholders, styled headings, code blocks, and more.
+A [ratatui] markdown renderer with image placeholders, styled headings, code blocks,
+**per-section alignment**, and more.
 
 ```toml
 [dependencies]
@@ -27,18 +28,71 @@ let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 Output lines work directly with ratatui's `Paragraph` widget — scrolling,
 line counting, and word-wrapping are all handled by the existing widget.
 
+## Per-section alignment
+
+Every block-level element has a corresponding `*_alignment` field:
+
+| Element | Alignment field | Supported values |
+|---------|----------------|-----------------|
+| Paragraph | `paragraph_alignment` | `Left`, `Center`, `Right`, `Justify` |
+| Heading 1 | `heading_1_alignment` | `Left`, `Center`, `Right` |
+| Heading 2 | `heading_2_alignment` | `Left`, `Center`, `Right` |
+| Heading 3 | `heading_3_alignment` | `Left`, `Center`, `Right` |
+| Code block | `code_block_alignment` | `Left`, `Center`, `Right` |
+| Blockquote | `quote_alignment` | `Left`, `Center`, `Right`, `Justify` |
+
+`Left` is the default for all elements (backward-compatible).
+
+```rust
+use limner::{render_markdown, Alignment, MarkdownStyle};
+
+let style = MarkdownStyle {
+    heading_1_alignment: Alignment::Center,
+    paragraph_alignment: Alignment::Justify,
+    code_block_alignment: Alignment::Right,
+    ..MarkdownStyle::default()
+};
+
+let result = render_markdown("# Title\n\nBody text...", &style, 60);
+```
+
+**Justify** — limner word-wraps paragraphs itself and distributes extra
+spaces between words so every line (except the last) fills the full width.
+Works correctly with inline styles (bold, italic, code) and images.
+
+Render multiple sections with different alignments by calling
+`render_markdown` separately for each section and combining the lines:
+
+```rust
+use limner::{render_markdown, Alignment, MarkdownStyle};
+
+let title = render_markdown("# Centered Title", &MarkdownStyle {
+    heading_1_alignment: Alignment::Center,
+    ..MarkdownStyle::default()
+}, 80);
+
+let body = render_markdown("Justified body text...", &MarkdownStyle {
+    paragraph_alignment: Alignment::Justify,
+    ..MarkdownStyle::default()
+}, 80);
+
+let mut all_lines = title.lines;
+all_lines.extend(body.lines);
+```
+
 ## Features
 
-- **Headings** (levels 1–3) with configurable styles
+- **Headings** (levels 1–3) with configurable styles and alignment
 - **Bold, italic, strikethrough** with proper nesting
-- **Inline code** and **code blocks** with full-width background
+- **Inline code** and **code blocks** with full-width background and alignment
 - **Links** with styled text and prefix
 - **Images** rendered as placeholder text (`🖼 alt-text`)
-- **Blockquotes** with per-line indicators
+- **Blockquotes** with per-line indicators and justified continuation lines
 - **Ordered and unordered lists**
 - **Horizontal rules**
+- **Per-section alignment** — center, right, or justify individual elements
 - **Lightweight** — only depends on `ratatui`, `pulldown-cmark`, and `unicode-width`
-- **Terminal image rendering** (optional) — via `image-protocol` feature; requires a terminal that supports Kitty graphics protocol, Sixel, or iTerm2
+- **Terminal image rendering** (optional) — via `image-protocol` feature
 
 ## Terminal image rendering
 
@@ -89,16 +143,24 @@ cargo run --example demo
 cargo run --example demo --features image-protocol
 ```
 
+Controls: `Up`/`Down` to scroll, `PageUp`/`PageDown` to scroll faster,
+`Home` to jump to the top, `End` to jump to the bottom, `Q`/`Esc` to quit.
+
 ## Theming
 
-`MarkdownStyle` exposes every element's [`Style`] and text prefix.
+`MarkdownStyle` exposes every element's [`Style`], alignment, and text prefix.
 Set only the fields you want to override:
 
 ```rust
+use limner::{Alignment, MarkdownStyle};
+use ratatui::prelude::*;
+
 let my_style = MarkdownStyle {
     heading_1: Style::new().fg(Color::Rgb(255, 200, 100)).bold(),
+    heading_1_alignment: Alignment::Center,
     code_block: Style::new().fg(Color::Rgb(200, 200, 100)),
     code_block_bg: Color::Rgb(30, 30, 30),
+    quote_alignment: Alignment::Justify,
     link: Style::new().cyan().underlined(),
     ..MarkdownStyle::default()
 };
