@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use ratatui::layout::Alignment;
 use ratatui::text::Line;
 
 use crate::ImageInfo;
@@ -35,6 +36,8 @@ pub struct ImagePlacement {
     pub cell_cols: u16,
     /// Number of terminal rows the image occupies.
     pub cell_rows: u16,
+    /// Horizontal alignment within the content area (None = left-aligned).
+    pub alignment: Option<Alignment>,
 }
 
 /// Compute the optimal cell dimensions for an image, fitting within
@@ -123,7 +126,7 @@ pub fn prepare_inline_images(
     let mut indexed: Vec<(usize, &ImageInfo)> = images.iter().enumerate().collect();
     indexed.sort_by_key(|a| a.1.line_index);
 
-    // Pass 1 — lazily create protocols for newly cached images.
+    // Pass 1 — lazily create fixed-size protocols for newly cached images.
     for (_, img) in &indexed {
         if cache.contains_key(&img.url) && !protocol_cache.contains_key(&img.url) {
             if let Some(dyn_img) = cache.get(&img.url) {
@@ -165,7 +168,14 @@ pub fn prepare_inline_images(
             continue;
         }
 
-        let empty: Vec<Line<'static>> = (0..rows).map(|_| Line::from("")).collect();
+        let alignment = lines[insert_at].alignment;
+        let empty: Vec<Line<'static>> = (0..rows)
+            .map(|_| {
+                let mut l = Line::from("");
+                l.alignment = alignment;
+                l
+            })
+            .collect();
         lines.splice(insert_at..=insert_at, empty);
 
         placements.push(ImagePlacement {
@@ -173,6 +183,7 @@ pub fn prepare_inline_images(
             line_start: insert_at,
             cell_cols: cols,
             cell_rows: rows,
+            alignment,
         });
 
         offset += rows as isize - 1;
