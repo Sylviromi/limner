@@ -70,6 +70,9 @@ pub fn render_markdown(input: &str, style: &MarkdownStyle, width: u16) -> Render
         r.handle(event);
     }
     r.flush_paragraph(style.paragraph);
+    while r.output.last().map(|l| l.spans.is_empty()).unwrap_or(false) {
+        r.output.pop();
+    }
     RenderResult {
         lines: r.output,
         images: r.images,
@@ -157,6 +160,9 @@ impl<'a> Renderer<'a> {
                 let mut l = Line::from(Span::styled(line, self.style.hr_style));
                 l.alignment = Self::map_alignment(self.block_alignment);
                 self.output.push(l);
+                if self.list_counters.is_empty() {
+                    self.output.push(Line::default());
+                }
             }
             Event::TaskListMarker(checked) => {
                 let mark = if checked { "☑ " } else { "☐ " };
@@ -253,7 +259,11 @@ impl<'a> Renderer<'a> {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph => {
+                let before = self.output.len();
                 self.flush_paragraph(self.style.paragraph);
+                if self.output.len() > before && self.list_counters.is_empty() {
+                    self.output.push(Line::default());
+                }
                 self.has_content = true;
             }
             TagEnd::Heading(level) => {
@@ -262,14 +272,23 @@ impl<'a> Renderer<'a> {
                     HeadingLevel::H2 => self.style.heading_2,
                     _ => self.style.heading_3,
                 };
+                let before = self.output.len();
                 self.flush_paragraph(style);
+                if self.output.len() > before && self.list_counters.is_empty() {
+                    self.output.push(Line::default());
+                }
             }
             TagEnd::BlockQuote(_) => {
+                let before = self.output.len();
                 self.flush_paragraph(self.style.paragraph);
+                if self.output.len() > before && self.list_counters.is_empty() {
+                    self.output.push(Line::default());
+                }
                 self.in_blockquote = self.in_blockquote.saturating_sub(1);
             }
             TagEnd::CodeBlock => {
                 if let Some(buf) = self.code_buf.take() {
+                    let before = self.output.len();
                     let mut lines = layout::wrap_code_block(
                         &buf,
                         self.width as usize,
@@ -278,10 +297,17 @@ impl<'a> Renderer<'a> {
                     );
                     self.apply_alignment(&mut lines);
                     self.output.extend(lines);
+                    if self.output.len() > before && self.list_counters.is_empty() {
+                        self.output.push(Line::default());
+                    }
                 }
             }
             TagEnd::List(_) => {
+                let before = self.output.len();
                 self.flush_paragraph(self.style.paragraph);
+                if self.output.len() > before && self.list_counters.len() <= 1 {
+                    self.output.push(Line::default());
+                }
                 self.list_counters.pop();
                 self.item_prefix = None;
             }
@@ -794,6 +820,74 @@ mod tests {
             1,
             "alt text should not be duplicated"
         );
+    }
+
+    #[test]
+    fn justify_apostrophe_keeps_word_whole() {
+        let style = MarkdownStyle {
+            paragraph_alignment: Alignment::Justify,
+            ..MarkdownStyle::default()
+        };
+        let result = render_markdown("my father's boots", &style, 80);
+        assert_eq!(result.lines.len(), 1);
+        let line = result.lines[0].to_string();
+        assert!(
+            line.contains("father\u{2019}s"),
+            "expected apostrophe word intact, got: {line:?}"
+        );
+    }
+
+    #[test]
+    fn justify_double_quote_sticks_to_word() {
+        let style = MarkdownStyle {
+            paragraph_alignment: Alignment::Justify,
+            ..MarkdownStyle::default()
+        };
+        let result = render_markdown("\"hello\" world", &style, 80);
+        assert_eq!(result.lines.len(), 1);
+        let line = result.lines[0].to_string();
+        assert!(
+            line.contains('\u{201C}'),
+            "expected left curly quote, got: {line:?}"
+        );
+        assert!(
+            line.contains('\u{201D}'),
+            "expected right curly quote, got: {line:?}"
+        );
+    }
+
+    #[test]
+    fn two_paragraphs_separated_by_blank_line() {
+        let result = render_markdown("First paragraph.\n\nSecond paragraph.", &default_style(), 80);
+        assert_eq!(result.lines.len(), 3, "expected 2 paras + 1 blank separator");
+        assert_eq!(result.lines[0].to_string(), "First paragraph.");
+        assert!(result.lines[1].to_string().is_empty(), "line 1 should be blank");
+        assert_eq!(result.lines[2].to_string(), "Second paragraph.");
+    }
+
+    #[test]
+    fn heading_and_paragraph_separated() {
+        let result = render_markdown("# Title\n\nBody text.", &default_style(), 80);
+        assert_eq!(result.lines.len(), 3, "expected heading + blank + paragraph");
+        assert!(result.lines[0].to_string().contains("Title"));
+        assert!(result.lines[1].to_string().is_empty(), "separator should be blank");
+        assert_eq!(result.lines[2].to_string(), "Body text.");
+    }
+
+    #[test]
+    fn multiple_blocks_no_trailing_blank() {
+        let result = render_markdown("# A\n\na\n\n## B\n\nb\n\n---\n\nc", &default_style(), 80);
+        assert!(!result.lines.is_empty(), "should have content");
+        assert!(
+            !result.lines.last().unwrap().to_string().is_empty(),
+            "last line should not be blank"
+        );
+    }
+
+    #[test]
+    fn list_items_no_blank_lines_between() {
+        let result = render_markdown("- one\n- two\n- three", &default_style(), 80);
+        assert_eq!(result.lines.len(), 3, "no blank lines between list items");
     }
 
     #[test]
