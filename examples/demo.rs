@@ -7,6 +7,10 @@
 use std::io::stdout;
 
 use crossterm::event::{self, Event, KeyCode};
+#[cfg(feature = "image-protocol")]
+use ratatui::layout::Alignment as RatatuiAlignment;
+#[cfg(feature = "image-protocol")]
+use ratatui::layout::Size;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -289,6 +293,65 @@ fn sections(
                 ..base.clone()
             },
         },
+        // 19 ── Image in centered paragraph ──────────────────────
+        Section {
+            label: "Image — Center",
+            text: txt(
+                "# Centered Image\n\n\
+                 This paragraph is centered and contains an inline image: \
+                 ![Rust logo](https://rust-lang.org/logos/rust-logo-512x512.png). \
+                 The image should also be centered horizontally."
+            )
+            .leak(),
+            style: MarkdownStyle {
+                heading_1_alignment: Alignment::Center,
+                paragraph_alignment: Alignment::Center,
+                ..base.clone()
+            },
+        },
+        // 20 ── Image in right-aligned paragraph ─────────────────
+        Section {
+            label: "Image — Right",
+            text: txt(
+                "## Right-Aligned Image\n\n\
+                 This paragraph is right-aligned with an image: \
+                 ![Rust logo](https://rust-lang.org/logos/rust-logo-512x512.png). \
+                 The image should hug the right edge of the terminal."
+            )
+            .leak(),
+            style: MarkdownStyle {
+                heading_2_alignment: Alignment::Right,
+                paragraph_alignment: Alignment::Right,
+                ..base.clone()
+            },
+        },
+        // 21 ── Image in left-aligned paragraph (baseline) ───────
+        Section {
+            label: "Image — Left (baseline)",
+            text: txt(
+                "Left-aligned paragraph with an image: \
+                 ![Rust logo](https://rust-lang.org/logos/rust-logo-512x512.png). \
+                 The image should stay at the left edge."
+            )
+            .leak(),
+            style: MarkdownStyle {
+                ..base.clone()
+            },
+        },
+        // 22 ── Standalone centered image, no surrounding text ───
+        Section {
+            label: "Image — standalone center",
+            text: txt(
+                "Text above the centered image.\n\n\
+                 ![Rust logo](https://rust-lang.org/logos/rust-logo-512x512.png)\n\n\
+                 Text below the centered image.",
+            )
+            .leak(),
+            style: MarkdownStyle {
+                paragraph_alignment: Alignment::Center,
+                ..base.clone()
+            },
+        },
     ];
 
     run(&sections, width)
@@ -311,6 +374,7 @@ fn main() -> std::io::Result<()> {
         ImageDemoState {
             image_cache: HashMap::new(),
             protocol_cache: HashMap::new(),
+            protocol_clip_cache: HashMap::new(),
             picker: Picker::from_query_stdio()
                 .unwrap_or_else(|_| limner::render_image::halfblock_picker()),
         }
@@ -325,10 +389,24 @@ fn main() -> std::io::Result<()> {
 
         #[allow(unused_mut)]
         let (mut lines, images, links) = sections(content_width);
-        let line_count = lines.len();
-        scroll = scroll.min(line_count.saturating_sub(1) as u16);
         let img_count = images.len();
         let link_count = links.len();
+
+        // Account for image placeholder expansion in scroll range.
+        // Each image replaces its 1-line placeholder with `cell_rows` lines,
+        // so the visual content is taller than the text-only line count.
+        let visual_line_count = {
+            #[cfg(feature = "image-protocol")]
+            {
+                lines.len()
+            }
+            #[cfg(not(feature = "image-protocol"))]
+            {
+                lines.len()
+            }
+        };
+        scroll = scroll.min(visual_line_count.saturating_sub(1) as u16);
+        let line_count = visual_line_count;
 
         #[cfg(feature = "image-protocol")]
         let placements = {
@@ -378,9 +456,6 @@ fn main() -> std::io::Result<()> {
                 let content_top = inner.y as i32;
                 let content_bottom = (inner.y + inner.height) as i32;
                 for p in &placements {
-                    let Some(protocol) = state.protocol_cache.get(&p.url) else {
-                        continue;
-                    };
                     let visual_y = if p.line_start == 0 {
                         0
                     } else {
@@ -390,18 +465,79 @@ fn main() -> std::io::Result<()> {
                             .line_count(inner.width)
                             .max(1) as u16
                     };
-                    let y0 = content_top + visual_y as i32 - scroll as i32;
-                    let y1 = y0 + p.cell_rows as i32;
-                    if y0 < content_top || y1 > content_bottom {
+                    let unclipped_y0 = content_top + visual_y as i32 - scroll as i32;
+                    let mut y0 = unclipped_y0;
+                    let mut y1 = y0 + p.cell_rows as i32;
+                    // Clip to visible content area so partially off-screen images
+                    // still show their correct visible portion instead of disappearing.
+                    y0 = y0.max(content_top);
+                    y1 = y1.min(content_bottom);
+                    if y0 >= y1 {
                         continue;
                     }
+                    let x = match p.alignment {
+                        Some(RatatuiAlignment::Center) => inner.x
+                            + (inner.width / 2).saturating_sub(p.cell_cols / 2),
+                        Some(RatatuiAlignment::Right) => {
+                            inner.x + inner.width.saturating_sub(p.cell_cols)
+                        }
+                        _ => inner.x,
+                    };
+
+                    let visible_height = (y1 - y0) as u16;
+
+                    // Always build a protocol whose pixel data exactly matches the visible
+                    // cell‑rows — whether the image is clipped from the top (scrolled past it)
+                    // or from the bottom (taller than the viewport).  This avoids relying on
+                    // protocol‑internal area‑clipping which doesn't work the same way across
+                    // all backends.
+                    let render_protocol = if visible_height < p.cell_rows {
+                        let hidden_top = if unclipped_y0 < content_top {
+                            (content_top - unclipped_y0) as u16
+                        } else {
+                            0
+                        };
+                        let cache_key = (p.url.clone(), visible_height, hidden_top);
+                        state
+                            .protocol_clip_cache
+                            .entry(cache_key)
+                            .or_insert_with(|| {
+                                let Some(img) = state.image_cache.get(&p.url) else {
+                                    return state
+                                        .protocol_cache
+                                        .get(&p.url)
+                                        .cloned()
+                                        .expect("protocol must exist");
+                                };
+                                limner::render_image::make_scrolled_protocol(
+                                    &state.picker,
+                                    img,
+                                    Size::new(p.cell_cols, p.cell_rows),
+                                    Size::new(p.cell_cols, visible_height),
+                                    hidden_top,
+                                )
+                                .unwrap_or_else(|| {
+                                    state
+                                        .protocol_cache
+                                        .get(&p.url)
+                                        .cloned()
+                                        .expect("protocol must exist")
+                                })
+                            })
+                    } else {
+                        state
+                            .protocol_cache
+                            .get(&p.url)
+                            .expect("protocol must exist")
+                    };
+
                     f.render_widget(
-                        limner::render_image::Image::new(protocol),
+                        limner::render_image::Image::new(render_protocol),
                         Rect {
-                            x: inner.x,
+                            x,
                             y: y0 as u16,
                             width: p.cell_cols,
-                            height: p.cell_rows,
+                            height: visible_height,
                         },
                     );
                 }
@@ -431,6 +567,8 @@ fn main() -> std::io::Result<()> {
 struct ImageDemoState {
     image_cache: std::collections::HashMap<String, limner::render_image::img_crate::DynamicImage>,
     protocol_cache: std::collections::HashMap<String, limner::render_image::Protocol>,
+    protocol_clip_cache:
+        std::collections::HashMap<(String, u16, u16), limner::render_image::Protocol>,
     picker: limner::render_image::Picker,
 }
 
