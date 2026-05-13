@@ -90,6 +90,48 @@ pub fn make_protocol(
         .ok()
 }
 
+/// Create a [`Protocol`] for a scrolled / partially-visible image.
+///
+/// The original image is first scaled to `full_size` (preserving aspect ratio), then
+/// `hidden_top` cell‑rows are sliced off from the top, yielding a protocol
+/// that matches `visible_size`.  This lets the bottom portion of a scrolled‑past
+/// image render instead of the top.
+pub fn make_scrolled_protocol(
+    picker: &Picker,
+    img: &img_crate::DynamicImage,
+    full_size: ratatui::layout::Size,
+    visible_size: ratatui::layout::Size,
+    hidden_top: u16,
+) -> Option<Protocol> {
+    let (fw, fh) = (picker.font_size().width as u32, picker.font_size().height as u32);
+
+    // Pixel dimensions the image would occupy at `full_size`.
+    let fit_w = full_size.width as u32 * fw;
+    let fit_h = full_size.height as u32 * fh;
+
+    // Uniform scale so the image fits into (fit_w × fit_h), never upscale.
+    let scale = (fit_w as f64 / img.width() as f64)
+        .min(fit_h as f64 / img.height() as f64)
+        .min(1.0);
+    let sw = (img.width() as f64 * scale).round() as u32;
+    let sh = (img.height() as f64 * scale).round() as u32;
+
+    let scaled = img.resize_exact(sw, sh, image::imageops::FilterType::Nearest);
+
+    // Pad to the full cell grid with transparency.
+    let mut padded =
+        image::RgbaImage::from_pixel(fit_w, fit_h, image::Rgba([0, 0, 0, 0]));
+    image::imageops::overlay(&mut padded, &scaled, 0, 0);
+
+    // Slice off the hidden-top rows in pixel space.
+    let vis_pix_h = visible_size.height as u32 * fh;
+    let y_off = (hidden_top as u32 * fh).min(padded.height().saturating_sub(vis_pix_h));
+    let padded_dyn: img_crate::DynamicImage = padded.into();
+    let cropped = padded_dyn.crop_imm(0, y_off, fit_w, vis_pix_h);
+
+    picker.new_protocol(cropped, visible_size, Resize::Fit(None)).ok()
+}
+
 /// Create a halfblock-only [`Picker`] (works on every terminal).
 ///
 /// Use this instead of [`Picker::from_query_stdio`] when you want reliable
