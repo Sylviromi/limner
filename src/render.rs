@@ -561,16 +561,33 @@ impl<'a> Renderer<'a> {
     }
 
     fn spans_to_words(spans: &[Span<'static>]) -> Vec<StyledWord> {
-        let mut words = Vec::new();
+        let mut words: Vec<StyledWord> = Vec::new();
+        let mut current = String::new();
+        let mut current_style: Option<Style> = None;
+
         for span in spans {
-            for word in span.content.split_ascii_whitespace() {
-                if !word.is_empty() {
-                    words.push(StyledWord {
-                        text: word.to_string(),
-                        style: span.style,
-                    });
+            for ch in span.content.chars() {
+                if ch.is_ascii_whitespace() {
+                    if !current.is_empty() {
+                        words.push(StyledWord {
+                            text: std::mem::take(&mut current),
+                            style: current_style.unwrap_or(span.style),
+                        });
+                        current_style = None;
+                    }
+                } else {
+                    if current.is_empty() {
+                        current_style = Some(span.style);
+                    }
+                    current.push(ch);
                 }
             }
+        }
+        if !current.is_empty() {
+            words.push(StyledWord {
+                text: current,
+                style: current_style.unwrap_or_default(),
+            });
         }
         words
     }
@@ -777,5 +794,29 @@ mod tests {
             1,
             "alt text should not be duplicated"
         );
+    }
+
+    #[test]
+    fn spans_to_words_contractions() {
+        let spans = vec![
+            Span::raw("it"),
+            Span::raw("\u{2019}"),
+            Span::raw("s a test"),
+        ];
+        let words = Renderer::spans_to_words(&spans);
+        let texts: Vec<_> = words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, ["it\u{2019}s", "a", "test"]);
+    }
+
+    #[test]
+    fn spans_to_words_quotes() {
+        let spans = vec![
+            Span::raw("\u{201C}"),
+            Span::raw("hello"),
+            Span::raw("\u{201D}"),
+        ];
+        let words = Renderer::spans_to_words(&spans);
+        let texts: Vec<_> = words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(texts, ["\u{201C}hello\u{201D}"]);
     }
 }
