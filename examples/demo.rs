@@ -392,22 +392,6 @@ fn main() -> std::io::Result<()> {
         let img_count = images.len();
         let link_count = links.len();
 
-        // Account for image placeholder expansion in scroll range.
-        // Each image replaces its 1-line placeholder with `cell_rows` lines,
-        // so the visual content is taller than the text-only line count.
-        let visual_line_count = {
-            #[cfg(feature = "image-protocol")]
-            {
-                lines.len()
-            }
-            #[cfg(not(feature = "image-protocol"))]
-            {
-                lines.len()
-            }
-        };
-        scroll = scroll.min(visual_line_count.saturating_sub(1) as u16);
-        let line_count = visual_line_count;
-
         #[cfg(feature = "image-protocol")]
         let placements = {
             for img in &images {
@@ -434,6 +418,8 @@ fn main() -> std::io::Result<()> {
             )
         };
 
+        let line_count = lines.len();
+
         let block = Block::default()
             .title(" limner alignment demo ")
             .borders(Borders::ALL)
@@ -441,6 +427,7 @@ fn main() -> std::io::Result<()> {
                 " {scroll}/{line_count} lines · {img_count} images · {link_count} links ",
             ));
         let inner = block.inner(area);
+        scroll = scroll.min(line_count.saturating_sub(inner.height as usize) as u16);
 
         terminal.draw(|f| {
             f.render_widget(block, area);
