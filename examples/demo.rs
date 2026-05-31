@@ -367,8 +367,7 @@ fn main() -> std::io::Result<()> {
 
         ImageDemoState {
             image_cache: HashMap::new(),
-            protocol_cache: HashMap::new(),
-            protocol_clip_cache: HashMap::new(),
+            sliced_protocol_cache: HashMap::new(),
             picker,
         }
     };
@@ -402,8 +401,8 @@ fn main() -> std::io::Result<()> {
             limner::render_image::prepare_inline_images(
                 &mut lines,
                 &images,
-                &state.image_cache,
-                &mut state.protocol_cache,
+                &mut state.image_cache,
+                &mut state.sliced_protocol_cache,
                 &state.picker,
                 &font_size,
                 content_width,
@@ -433,67 +432,22 @@ fn main() -> std::io::Result<()> {
 
             #[cfg(feature = "image-protocol")]
             {
-                use limner::render_image::{compute_image_render_rects, ImageViewport};
-                use ratatui::layout::Size;
+                use limner::render_image::{
+                    compute_image_signed_positions, ImageViewport, SlicedImage,
+                };
 
                 let viewport = ImageViewport {
                     content: inner,
                     scroll,
                 };
-                let render_rects = compute_image_render_rects(&placements, &lines, &viewport);
+                let render_positions =
+                    compute_image_signed_positions(&placements, &lines, &viewport);
 
-                for r in &render_rects {
-                    let needs_clip = r.hidden_top > 0
-                        || r.hidden_left > 0
-                        || r.render_rect.width < r.full_cols
-                        || r.render_rect.height < r.full_rows;
-
-                    let render_protocol = if needs_clip {
-                        let cache_key = (
-                            r.url.clone(),
-                            r.render_rect.width,
-                            r.render_rect.height,
-                            r.hidden_top,
-                            r.hidden_left,
-                        );
-                        state
-                            .protocol_clip_cache
-                            .entry(cache_key)
-                            .or_insert_with(|| {
-                                let Some(img) = state.image_cache.get(&r.url) else {
-                                    return state
-                                        .protocol_cache
-                                        .get(&r.url)
-                                        .cloned()
-                                        .expect("protocol must exist");
-                                };
-                                limner::render_image::make_clipped_protocol(
-                                    &state.picker,
-                                    img,
-                                    Size::new(r.full_cols, r.full_rows),
-                                    Size::new(r.render_rect.width, r.render_rect.height),
-                                    r.hidden_top,
-                                    r.hidden_left,
-                                )
-                                .unwrap_or_else(|| {
-                                    state
-                                        .protocol_cache
-                                        .get(&r.url)
-                                        .cloned()
-                                        .expect("protocol must exist")
-                                })
-                            })
-                    } else {
-                        state
-                            .protocol_cache
-                            .get(&r.url)
-                            .expect("protocol must exist")
+                for r in &render_positions {
+                    let Some(sliced) = state.sliced_protocol_cache.get(&r.url) else {
+                        continue;
                     };
-
-                    f.render_widget(
-                        limner::render_image::Image::new(render_protocol),
-                        r.render_rect,
-                    );
+                    f.render_widget(SlicedImage::new(sliced, r.position), inner);
                 }
             }
         })?;
@@ -520,9 +474,7 @@ fn main() -> std::io::Result<()> {
 #[cfg(feature = "image-protocol")]
 struct ImageDemoState {
     image_cache: std::collections::HashMap<String, limner::render_image::img_crate::DynamicImage>,
-    protocol_cache: std::collections::HashMap<String, limner::render_image::Protocol>,
-    protocol_clip_cache:
-        std::collections::HashMap<(String, u16, u16, u16, u16), limner::render_image::Protocol>,
+    sliced_protocol_cache: std::collections::HashMap<String, limner::render_image::SlicedProtocol>,
     picker: limner::render_image::Picker,
 }
 

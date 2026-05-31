@@ -24,6 +24,9 @@ pub use ratatui_image::{protocol::Protocol, FontSize, Image, Resize};
 /// Re-export the picker and protocol type.
 pub use ratatui_image::picker::{Picker, ProtocolType};
 
+/// Re-export sliced image types for scrollable/clipped image rendering.
+pub use ratatui_image::sliced::{SignedPosition, SlicedImage, SlicedProtocol};
+
 /// Result of preparing images for inline rendering within markdown content.
 ///
 /// Returned by [`prepare_inline_images`]; the caller uses the fields to position
@@ -91,6 +94,24 @@ pub fn make_protocol(
         .ok()
 }
 
+/// Create a [`SlicedProtocol`] from a decoded image.
+///
+/// The image is scaled to fit within `cell_cols × cell_rows` terminal cells
+/// while preserving aspect ratio, then encoded into a protocol that supports
+/// efficient row-level clipping for scrolling via [`SlicedImage`].
+///
+/// Unlike [`make_protocol`], this consumes the `DynamicImage` and sets up
+/// internal row slicing so that scrolling/clipping costs zero per-frame work.
+pub fn make_sliced_protocol(
+    picker: &Picker,
+    img: img_crate::DynamicImage,
+    cell_cols: u16,
+    cell_rows: u16,
+) -> Option<SlicedProtocol> {
+    let size = ratatui::layout::Size::new(cell_cols, cell_rows);
+    SlicedProtocol::new(picker, img, Some(size)).ok()
+}
+
 /// Create a [`Protocol`] for a clipped / partially-visible image.
 ///
 /// The original image is first scaled to `full_size` (preserving aspect ratio),
@@ -99,6 +120,10 @@ pub fn make_protocol(
 ///
 /// Use this to render images that are partially off‑screen — the visible
 /// portion of the image is sent to the terminal instead of the full image.
+#[deprecated(
+    since = "0.5.0",
+    note = "use `SlicedProtocol` + `SlicedImage` instead; call `make_sliced_protocol` once then render with `SlicedImage::new()`"
+)]
 pub fn make_clipped_protocol(
     picker: &Picker,
     img: &img_crate::DynamicImage,
@@ -146,6 +171,11 @@ pub fn make_clipped_protocol(
 /// Create a [`Protocol`] for a vertically-scrolled / partially-visible image.
 ///
 /// Convenience wrapper around [`make_clipped_protocol`] with `hidden_left = 0`.
+#[deprecated(
+    since = "0.5.0",
+    note = "use `SlicedProtocol` + `SlicedImage` instead; call `make_sliced_protocol` once then render with `SlicedImage::new()`"
+)]
+#[allow(deprecated)]
 pub fn make_scrolled_protocol(
     picker: &Picker,
     img: &img_crate::DynamicImage,
@@ -176,6 +206,83 @@ pub struct ImageViewport {
     pub scroll: u16,
 }
 
+/// Describes where to render a [`SlicedImage`] widget.
+///
+/// Returned by [`compute_image_signed_positions`].  The caller should
+/// look up the [`SlicedProtocol`] from `sliced_protocol_cache` and render
+/// via `SlicedImage::new(&sliced, position)` at the content area.
+///
+/// The [`SignedPosition`] is relative to the content area passed to
+/// `f.render_widget()` — the [`SlicedImage`] widget handles all row-level
+/// skip/drop and column-level clamping automatically.
+pub struct ImageSlicedRender {
+    /// The image URL (key into `sliced_protocol_cache`).
+    pub url: String,
+    /// Position relative to the content area (may be negative for off-screen start).
+    pub position: SignedPosition,
+}
+
+/// Compute signed positions for sliced image rendering.
+///
+/// Takes the output of [`prepare_inline_images`] and the current viewport,
+/// returning a signed position for each visible or partially-visible image.
+///
+/// Images that are fully off‑screen are excluded from the result.  For
+/// partially-visible images, the widget's built-in clipping handles the
+/// skip/drop automatically — no per-frame protocol creation is needed.
+///
+/// `lines` is the full line buffer after `prepare_inline_images` has replaced
+/// image placeholders — its length is used to safely clamp line indices.
+pub fn compute_image_signed_positions(
+    placements: &[ImagePlacement],
+    lines: &[Line],
+    viewport: &ImageViewport,
+) -> Vec<ImageSlicedRender> {
+    let content_width = viewport.content.width as i16;
+    let content_height = viewport.content.height as i16;
+
+    let mut positions = Vec::new();
+
+    for p in placements {
+        // Compute visual Y (accounting for Paragraph word-wrap).
+        let visual_y: u16 = if p.line_start == 0 {
+            0
+        } else {
+            let end = p.line_start.min(lines.len());
+            Paragraph::new(lines[..end].to_vec())
+                .wrap(Wrap { trim: false })
+                .line_count(viewport.content.width)
+                .max(1) as u16
+        };
+
+        // Compute x based on alignment (relative to content left edge).
+        let x: i16 = match p.alignment {
+            Some(Alignment::Center) => (content_width - p.cell_cols as i16) / 2,
+            Some(Alignment::Right) => content_width - p.cell_cols as i16,
+            _ => 0,
+        };
+
+        let y: i16 = visual_y as i16 - viewport.scroll as i16;
+
+        // Skip if fully off-screen.
+        let cell_rows = p.cell_rows as i16;
+        if y + cell_rows <= 0 || y >= content_height {
+            continue;
+        }
+        let cell_cols = p.cell_cols as i16;
+        if x + cell_cols <= 0 || x >= content_width {
+            continue;
+        }
+
+        positions.push(ImageSlicedRender {
+            url: p.url.clone(),
+            position: SignedPosition { x, y },
+        });
+    }
+
+    positions
+}
+
 /// Describes how to render a single image, including any clipping parameters.
 ///
 /// Returned by [`compute_image_render_rects`].  The caller should:
@@ -185,6 +292,10 @@ pub struct ImageViewport {
 ///    (`hidden_top > 0` or `hidden_left > 0`), or use the standard cached
 ///    protocol otherwise.
 /// 3. Render an [`Image`] widget at `render_rect`.
+#[deprecated(
+    since = "0.5.0",
+    note = "use `ImageSlicedRender` + `compute_image_signed_positions` instead; render via `SlicedImage::new()`"
+)]
 pub struct ImageRenderRect {
     /// The image URL (key into the caller's image and protocol caches).
     pub url: String,
@@ -213,6 +324,11 @@ pub struct ImageRenderRect {
 ///
 /// `lines` is the full line buffer after `prepare_inline_images` has replaced
 /// image placeholders — its length is used to safely clamp line indices.
+#[deprecated(
+    since = "0.5.0",
+    note = "use `compute_image_signed_positions` instead; SlicedImage handles clipping automatically"
+)]
+#[allow(deprecated)]
 pub fn compute_image_render_rects(
     placements: &[ImagePlacement],
     lines: &[Line],
@@ -301,24 +417,25 @@ pub fn compute_image_render_rects(
 
 /// Prepare images for inline rendering within markdown content.
 ///
-/// **Pass 1** — For every image whose URL is in `cache` but not yet in
-/// `protocol_cache`, a new [`Protocol`] is created and inserted.
+/// **Pass 1** — For every image whose URL is in `image_cache` but not yet in
+/// `sliced_protocol_cache`, a new [`SlicedProtocol`] is created and inserted.
+/// The [`DynamicImage`] is consumed (removed from `image_cache`) on success.
 ///
 /// **Pass 2** — Each image placeholder (1 line) in `lines` is replaced with
 /// `cell_rows` empty lines to reserve space.  An [`ImagePlacement`] is returned
-/// describing where the caller should position the [`Image`] widget.
+/// describing where the caller should position the [`SlicedImage`] widget.
 ///
-/// Images whose URL is NOT in `cache` are skipped — the placeholder text
+/// Images whose URL is NOT in `image_cache` are skipped — the placeholder text
 /// (e.g. `🖼 alt`) remains visible in the rendered content.
 ///
-/// `max_rows` defaults to 6 (user preference).  `max_cols` should be the
+/// `max_rows` defaults to 10 (user preference).  `max_cols` should be the
 /// content area width in terminal columns.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_inline_images(
     lines: &mut Vec<Line<'static>>,
     images: &[ImageInfo],
-    cache: &HashMap<String, img_crate::DynamicImage>,
-    protocol_cache: &mut HashMap<String, Protocol>,
+    image_cache: &mut HashMap<String, img_crate::DynamicImage>,
+    sliced_protocol_cache: &mut HashMap<String, SlicedProtocol>,
     picker: &Picker,
     font_size: &FontSize,
     max_cols: u16,
@@ -327,14 +444,15 @@ pub fn prepare_inline_images(
     let mut indexed: Vec<(usize, &ImageInfo)> = images.iter().enumerate().collect();
     indexed.sort_by_key(|a| a.1.line_index);
 
-    // Pass 1 — lazily create fixed-size protocols for newly cached images.
+    // Pass 1 — lazily create SlicedProtocols for newly cached images.
+    // Consumes the DynamicImage from image_cache on success.
     for (_, img) in &indexed {
-        if cache.contains_key(&img.url) && !protocol_cache.contains_key(&img.url) {
-            if let Some(dyn_img) = cache.get(&img.url) {
-                let (cols, rows) = fit_cell_size(dyn_img, font_size, max_cols, max_rows);
+        if !sliced_protocol_cache.contains_key(&img.url) {
+            if let Some(dyn_img) = image_cache.remove(&img.url) {
+                let (cols, rows) = fit_cell_size(&dyn_img, font_size, max_cols, max_rows);
                 if cols > 0 && rows > 0 {
-                    if let Some(protocol) = make_protocol(picker, dyn_img, cols, rows) {
-                        protocol_cache.insert(img.url.clone(), protocol);
+                    if let Some(sliced) = make_sliced_protocol(picker, dyn_img, cols, rows) {
+                        sliced_protocol_cache.insert(img.url.clone(), sliced);
                     }
                 }
             }
@@ -351,16 +469,12 @@ pub fn prepare_inline_images(
     for (_, img) in &indexed {
         let adjusted_line = (img.line_index as isize + offset) as usize;
 
-        if !protocol_cache.contains_key(&img.url) {
-            continue;
-        }
-
-        let Some(dyn_img) = cache.get(&img.url) else {
+        let Some(sliced) = sliced_protocol_cache.get(&img.url) else {
             continue;
         };
 
-        let (cols, rows) = fit_cell_size(dyn_img, font_size, max_cols, max_rows);
-        if cols == 0 || rows == 0 {
+        let size = sliced.size();
+        if size.width == 0 || size.height == 0 {
             continue;
         }
 
@@ -370,7 +484,7 @@ pub fn prepare_inline_images(
         }
 
         let alignment = lines[insert_at].alignment;
-        let empty: Vec<Line<'static>> = (0..rows)
+        let empty: Vec<Line<'static>> = (0..size.height)
             .map(|_| {
                 let mut l = Line::from("");
                 l.alignment = alignment;
@@ -382,13 +496,13 @@ pub fn prepare_inline_images(
         placements.push(ImagePlacement {
             url: img.url.clone(),
             line_start: insert_at,
-            cell_cols: cols,
-            cell_rows: rows,
+            cell_cols: size.width,
+            cell_rows: size.height,
             alignment,
         });
 
-        offset += rows as isize - 1;
-        cursor = insert_at as isize + rows as isize;
+        offset += size.height as isize - 1;
+        cursor = insert_at as isize + size.height as isize;
     }
 
     placements
