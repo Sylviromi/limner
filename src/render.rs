@@ -858,19 +858,37 @@ mod tests {
 
     #[test]
     fn two_paragraphs_separated_by_blank_line() {
-        let result = render_markdown("First paragraph.\n\nSecond paragraph.", &default_style(), 80);
-        assert_eq!(result.lines.len(), 3, "expected 2 paras + 1 blank separator");
+        let result = render_markdown(
+            "First paragraph.\n\nSecond paragraph.",
+            &default_style(),
+            80,
+        );
+        assert_eq!(
+            result.lines.len(),
+            3,
+            "expected 2 paras + 1 blank separator"
+        );
         assert_eq!(result.lines[0].to_string(), "First paragraph.");
-        assert!(result.lines[1].to_string().is_empty(), "line 1 should be blank");
+        assert!(
+            result.lines[1].to_string().is_empty(),
+            "line 1 should be blank"
+        );
         assert_eq!(result.lines[2].to_string(), "Second paragraph.");
     }
 
     #[test]
     fn heading_and_paragraph_separated() {
         let result = render_markdown("# Title\n\nBody text.", &default_style(), 80);
-        assert_eq!(result.lines.len(), 3, "expected heading + blank + paragraph");
+        assert_eq!(
+            result.lines.len(),
+            3,
+            "expected heading + blank + paragraph"
+        );
         assert!(result.lines[0].to_string().contains("Title"));
-        assert!(result.lines[1].to_string().is_empty(), "separator should be blank");
+        assert!(
+            result.lines[1].to_string().is_empty(),
+            "separator should be blank"
+        );
         assert_eq!(result.lines[2].to_string(), "Body text.");
     }
 

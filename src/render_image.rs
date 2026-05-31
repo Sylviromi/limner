@@ -9,8 +9,9 @@
 
 use std::collections::HashMap;
 
-use ratatui::layout::Alignment;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::text::Line;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::ImageInfo;
 
@@ -20,8 +21,8 @@ pub use image as img_crate;
 /// Re-export key `ratatui-image` types for convenience.
 pub use ratatui_image::{protocol::Protocol, FontSize, Image, Resize};
 
-/// Re-export the picker.
-pub use ratatui_image::picker::Picker;
+/// Re-export the picker and protocol type.
+pub use ratatui_image::picker::{Picker, ProtocolType};
 
 /// Result of preparing images for inline rendering within markdown content.
 ///
@@ -90,20 +91,26 @@ pub fn make_protocol(
         .ok()
 }
 
-/// Create a [`Protocol`] for a scrolled / partially-visible image.
+/// Create a [`Protocol`] for a clipped / partially-visible image.
 ///
-/// The original image is first scaled to `full_size` (preserving aspect ratio), then
-/// `hidden_top` cell‑rows are sliced off from the top, yielding a protocol
-/// that matches `visible_size`.  This lets the bottom portion of a scrolled‑past
-/// image render instead of the top.
-pub fn make_scrolled_protocol(
+/// The original image is first scaled to `full_size` (preserving aspect ratio),
+/// then `hidden_top` cell‑rows and `hidden_left` cell‑columns are sliced off,
+/// yielding a protocol that matches `visible_size`.
+///
+/// Use this to render images that are partially off‑screen — the visible
+/// portion of the image is sent to the terminal instead of the full image.
+pub fn make_clipped_protocol(
     picker: &Picker,
     img: &img_crate::DynamicImage,
     full_size: ratatui::layout::Size,
     visible_size: ratatui::layout::Size,
     hidden_top: u16,
+    hidden_left: u16,
 ) -> Option<Protocol> {
-    let (fw, fh) = (picker.font_size().width as u32, picker.font_size().height as u32);
+    let (fw, fh) = (
+        picker.font_size().width as u32,
+        picker.font_size().height as u32,
+    );
 
     // Pixel dimensions the image would occupy at `full_size`.
     let fit_w = full_size.width as u32 * fw;
@@ -119,17 +126,34 @@ pub fn make_scrolled_protocol(
     let scaled = img.resize_exact(sw, sh, image::imageops::FilterType::Nearest);
 
     // Pad to the full cell grid with transparency.
-    let mut padded =
-        image::RgbaImage::from_pixel(fit_w, fit_h, image::Rgba([0, 0, 0, 0]));
+    let mut padded = image::RgbaImage::from_pixel(fit_w, fit_h, image::Rgba([0, 0, 0, 0]));
     image::imageops::overlay(&mut padded, &scaled, 0, 0);
 
-    // Slice off the hidden-top rows in pixel space.
+    // Slice off hidden rows and columns in pixel space.
+    let vis_pix_w = visible_size.width as u32 * fw;
     let vis_pix_h = visible_size.height as u32 * fh;
+    let x_off = (hidden_left as u32 * fw).min(padded.width().saturating_sub(vis_pix_w));
     let y_off = (hidden_top as u32 * fh).min(padded.height().saturating_sub(vis_pix_h));
-    let padded_dyn: img_crate::DynamicImage = padded.into();
-    let cropped = padded_dyn.crop_imm(0, y_off, fit_w, vis_pix_h);
 
-    picker.new_protocol(cropped, visible_size, Resize::Fit(None)).ok()
+    let padded_dyn: img_crate::DynamicImage = padded.into();
+    let cropped = padded_dyn.crop_imm(x_off, y_off, vis_pix_w, vis_pix_h);
+
+    picker
+        .new_protocol(cropped, visible_size, Resize::Fit(None))
+        .ok()
+}
+
+/// Create a [`Protocol`] for a vertically-scrolled / partially-visible image.
+///
+/// Convenience wrapper around [`make_clipped_protocol`] with `hidden_left = 0`.
+pub fn make_scrolled_protocol(
+    picker: &Picker,
+    img: &img_crate::DynamicImage,
+    full_size: ratatui::layout::Size,
+    visible_size: ratatui::layout::Size,
+    hidden_top: u16,
+) -> Option<Protocol> {
+    make_clipped_protocol(picker, img, full_size, visible_size, hidden_top, 0)
 }
 
 /// Create a halfblock-only [`Picker`] (works on every terminal).
@@ -138,6 +162,141 @@ pub fn make_scrolled_protocol(
 /// cross-terminal image rendering without Kitty/Sixel protocol detection.
 pub fn halfblock_picker() -> Picker {
     Picker::halfblocks()
+}
+
+/// Describes the visible viewport for computing image render positions.
+///
+/// Pass this to [`compute_image_render_rects`] along with the placements and
+/// line buffer so the library can calculate where each image should appear on
+/// screen — including any clipping needed when the image is partially off‑screen.
+pub struct ImageViewport {
+    /// The area where content is rendered (typically `block.inner(terminal_area)`).
+    pub content: Rect,
+    /// Current scroll offset in lines.
+    pub scroll: u16,
+}
+
+/// Describes how to render a single image, including any clipping parameters.
+///
+/// Returned by [`compute_image_render_rects`].  The caller should:
+///
+/// 1. Look up the decoded image from their cache.
+/// 2. Build a [`Protocol`] via [`make_clipped_protocol`] if clipping is needed
+///    (`hidden_top > 0` or `hidden_left > 0`), or use the standard cached
+///    protocol otherwise.
+/// 3. Render an [`Image`] widget at `render_rect`.
+pub struct ImageRenderRect {
+    /// The image URL (key into the caller's image and protocol caches).
+    pub url: String,
+    /// Where to render the visible portion (position + dimensions in terminal cells).
+    pub render_rect: Rect,
+    /// The original full cell dimensions (unclipped).
+    pub full_cols: u16,
+    pub full_rows: u16,
+    /// How many cell-rows are hidden from the top of the original image.
+    pub hidden_top: u16,
+    /// How many cell-columns are hidden from the left of the original image.
+    pub hidden_left: u16,
+    /// Horizontal alignment (from the markdown source).
+    pub alignment: Option<Alignment>,
+}
+
+/// Compute where to render each image given a viewport and scroll state.
+///
+/// Takes the output of [`prepare_inline_images`] and the current render state
+/// (`lines` and viewport) and returns a list of [`ImageRenderRect`] values.
+///
+/// Images that are fully off‑screen (above, below, left, or right) are
+/// excluded from the result.  Images that are partially visible get clipping
+/// parameters (`hidden_top`, `hidden_left`) that the caller passes to
+/// [`make_clipped_protocol`].
+///
+/// `lines` is the full line buffer after `prepare_inline_images` has replaced
+/// image placeholders — its length is used to safely clamp line indices.
+pub fn compute_image_render_rects(
+    placements: &[ImagePlacement],
+    lines: &[Line],
+    viewport: &ImageViewport,
+) -> Vec<ImageRenderRect> {
+    let content_top = viewport.content.y as i32;
+    let content_bottom = (viewport.content.y + viewport.content.height) as i32;
+    let content_left = viewport.content.x as i32;
+    let content_right = (viewport.content.x + viewport.content.width) as i32;
+
+    let mut render_rects = Vec::new();
+
+    for p in placements {
+        // Compute visual Y (accounting for Paragraph word-wrap).
+        let visual_y: u16 = if p.line_start == 0 {
+            0
+        } else {
+            let end = p.line_start.min(lines.len());
+            Paragraph::new(lines[..end].to_vec())
+                .wrap(Wrap { trim: false })
+                .line_count(viewport.content.width)
+                .max(1) as u16
+        };
+
+        // Unclipped terminal-space Y coordinates.
+        let unclipped_y0 = content_top + visual_y as i32 - viewport.scroll as i32;
+        let unclipped_y1 = unclipped_y0 + p.cell_rows as i32;
+
+        // Clamp Y to content area.
+        let y0 = unclipped_y0.max(content_top);
+        let y1 = unclipped_y1.min(content_bottom);
+        if y0 >= y1 {
+            continue;
+        }
+        let visible_rows = (y1 - y0) as u16;
+
+        // Compute logical horizontal position (may be negative for overflow).
+        let logical_x = match p.alignment {
+            Some(Alignment::Center) => {
+                content_left + (viewport.content.width as i32 / 2) - (p.cell_cols as i32 / 2)
+            }
+            Some(Alignment::Right) => {
+                content_left + viewport.content.width as i32 - p.cell_cols as i32
+            }
+            _ => content_left,
+        };
+
+        // Clamp X to content area.
+        let x0 = logical_x.max(content_left);
+        let x1 = (logical_x + p.cell_cols as i32).min(content_right);
+        if x0 >= x1 {
+            continue;
+        }
+        let visible_cols = (x1 - x0) as u16;
+
+        let hidden_top = if unclipped_y0 < content_top {
+            (content_top - unclipped_y0) as u16
+        } else {
+            0
+        };
+
+        let hidden_left = if logical_x < content_left {
+            (content_left - logical_x) as u16
+        } else {
+            0
+        };
+
+        render_rects.push(ImageRenderRect {
+            url: p.url.clone(),
+            render_rect: Rect {
+                x: x0 as u16,
+                y: y0 as u16,
+                width: visible_cols,
+                height: visible_rows,
+            },
+            full_cols: p.cell_cols,
+            full_rows: p.cell_rows,
+            hidden_top,
+            hidden_left,
+            alignment: p.alignment,
+        });
+    }
+
+    render_rects
 }
 
 /// Prepare images for inline rendering within markdown content.
