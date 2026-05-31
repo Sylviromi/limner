@@ -21,8 +21,14 @@ pulldown-cmark = "0.13"
 ratatui = "0.30"
 unicode-width = "0.2"
 
-ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"], optional = true }
+ratatui-image = { version = "11", default-features = false, features = ["crossterm"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"], optional = true }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
 
 [dev-dependencies]
 crossterm = "0.29"

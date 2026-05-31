@@ -1,0 +1,7 @@
+# Fast linker: uncomment after installing `mold` (recommended) or `lld`.
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#
+# Compiler cache: uncomment after installing `sccache`.
+# [build]
+# rustc-wrapper = "/usr/bin/sccache"
