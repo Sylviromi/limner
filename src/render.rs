@@ -63,8 +63,8 @@ pub fn render_markdown(input: &str, style: &MarkdownStyle, width: u16) -> Render
         in_blockquote: 0,
         code_buf: None,
         list_counters: Vec::new(),
-        item_prefix: None,
-        has_content: false,
+        item_marker: None,
+        item_indents: Vec::new(),
     };
     for event in parser {
         r.handle(event);
@@ -103,8 +103,10 @@ struct Renderer<'a> {
     in_blockquote: u32,
     code_buf: Option<String>,
     list_counters: Vec<ListCounter>,
-    item_prefix: Option<String>,
-    has_content: bool,
+    /// Marker (`• `, `1. `) for the current item, consumed by its first line.
+    item_marker: Option<String>,
+    /// Display width of each enclosing item's marker, for nested indentation.
+    item_indents: Vec<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -220,19 +222,17 @@ impl<'a> Renderer<'a> {
             }
             Tag::Item => {
                 self.flush_paragraph(self.style.paragraph);
-                self.has_content = false;
-                if let Some(counter) = self.list_counters.last_mut() {
-                    match counter {
-                        ListCounter::Bullet => {
-                            self.item_prefix = Some(self.style.list_bullet.to_string());
-                        }
-                        ListCounter::Ordered(n) => {
-                            let label = self.style.ordered_template.replace("{}", &n.to_string());
-                            self.item_prefix = Some(label);
-                            *n += 1;
-                        }
+                let marker = match self.list_counters.last_mut() {
+                    Some(ListCounter::Ordered(n)) => {
+                        let label = self.style.ordered_template.replace("{}", &n.to_string());
+                        *n += 1;
+                        label
                     }
-                }
+                    _ => self.style.list_bullet.to_string(),
+                };
+                self.item_indents
+                    .push(UnicodeWidthStr::width(marker.as_str()));
+                self.item_marker = Some(marker);
             }
             Tag::Emphasis => self.mods.push(self.style.italic),
             Tag::Strong => self.mods.push(self.style.bold),
@@ -264,7 +264,6 @@ impl<'a> Renderer<'a> {
                 if self.output.len() > before && self.list_counters.is_empty() {
                     self.output.push(Line::default());
                 }
-                self.has_content = true;
             }
             TagEnd::Heading(level) => {
                 let style = match level {
@@ -309,13 +308,11 @@ impl<'a> Renderer<'a> {
                     self.output.push(Line::default());
                 }
                 self.list_counters.pop();
-                self.item_prefix = None;
             }
             TagEnd::Item => {
-                if !self.has_content {
-                    self.flush_paragraph(self.style.paragraph);
-                }
-                self.item_prefix = None;
+                self.flush_paragraph(self.style.paragraph);
+                self.item_marker = None;
+                self.item_indents.pop();
             }
             TagEnd::Emphasis => {
                 self.mods.pop();
@@ -414,7 +411,7 @@ impl<'a> Renderer<'a> {
         // (image-protocol) which replaces the placeholder line with the actual
         // image — if the placeholder shared a line with surrounding text, that
         // text would be destroyed.
-        let had_content = !self.spans.is_empty() || self.item_prefix.is_some();
+        let had_content = !self.spans.is_empty() || self.item_marker.is_some();
         if had_content {
             self.flush_paragraph(self.current_style());
         }
@@ -442,7 +439,7 @@ impl<'a> Renderer<'a> {
 
     fn flush_paragraph(&mut self, base_style: Style) {
         let spans = std::mem::take(&mut self.spans);
-        if spans.is_empty() && self.item_prefix.is_none() {
+        if spans.is_empty() && self.item_marker.is_none() {
             return;
         }
 
@@ -567,22 +564,31 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn build_first_prefix(&self) -> String {
-        let mut p = String::new();
-        for _ in 0..self.in_blockquote {
-            p.push_str(self.style.quote_indicator);
-        }
-        if let Some(ref item) = self.item_prefix {
-            p.push_str(item);
-        }
+    /// Prefix for the first line of a block: quote indicators, indentation
+    /// for enclosing list items, then the current item's marker (consumed, so
+    /// later lines of the same item are indented instead of re-bulleted).
+    fn build_first_prefix(&mut self) -> String {
+        let Some(marker) = self.item_marker.take() else {
+            return self.build_cont_prefix();
+        };
+        let mut p = self
+            .style
+            .quote_indicator
+            .repeat(self.in_blockquote as usize);
+        let outer: usize = self.item_indents.iter().rev().skip(1).sum();
+        p.push_str(&" ".repeat(outer));
+        p.push_str(&marker);
         p
     }
 
+    /// Prefix for continuation lines: quote indicators plus indentation for
+    /// every enclosing list item.
     fn build_cont_prefix(&self) -> String {
-        let mut p = String::new();
-        for _ in 0..self.in_blockquote {
-            p.push_str(self.style.quote_indicator);
-        }
+        let mut p = self
+            .style
+            .quote_indicator
+            .repeat(self.in_blockquote as usize);
+        p.push_str(&" ".repeat(self.item_indents.iter().sum()));
         p
     }
 
@@ -906,6 +912,20 @@ mod tests {
     fn list_items_no_blank_lines_between() {
         let result = render_markdown("- one\n- two\n- three", &default_style(), 80);
         assert_eq!(result.lines.len(), 3, "no blank lines between list items");
+    }
+
+    #[test]
+    fn nested_lists_indent_without_stray_bullets() {
+        let result = render_markdown("- a\n  - b\n    1. c\n- d", &default_style(), 80);
+        let texts: Vec<String> = result.lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(texts, ["• a", "  • b", "    1. c", "• d"]);
+    }
+
+    #[test]
+    fn hard_break_in_list_item_indents_continuation() {
+        let result = render_markdown("- one  \n  two", &default_style(), 80);
+        let texts: Vec<String> = result.lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(texts, ["• one", "  two"]);
     }
 
     #[test]
