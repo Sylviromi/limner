@@ -1,6 +1,6 @@
 [package]
 name = "limner"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 license = "MIT"
 description = "A ratatui markdown renderer with tables, bordered code blocks, optional syntax highlighting, image placeholders, and styled headings"
