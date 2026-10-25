@@ -1,5 +1,5 @@
 use ratatui::prelude::{Color, Modifier, Style};
-use ratatui::symbols::border;
+use ratatui::symbols::{border, line};
 
 /// Per-section text alignment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -89,6 +89,14 @@ pub struct MarkdownStyle {
     /// shown in the top border or on a header line when borderless.
     pub code_block_language: Style,
 
+    // ── Tables ──────────────────────────────────────────────────
+    /// Line characters for table borders (e.g. `line::ROUNDED`, `line::NORMAL`).
+    pub table_border: line::Set<'static>,
+    /// Style applied to table border characters.
+    pub table_border_style: Style,
+    /// Style patched onto header-row cells.
+    pub table_header: Style,
+
     // ── Links ───────────────────────────────────────────────────
     /// Style applied to link text.
     pub link: Style,
@@ -150,6 +158,10 @@ impl Default for MarkdownStyle {
             code_block_border: Some(border::ROUNDED),
             code_block_border_style: Style::new().fg(Color::Rgb(80, 80, 80)),
             code_block_language: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+
+            table_border: line::ROUNDED,
+            table_border_style: Style::new().fg(Color::Rgb(80, 80, 80)),
+            table_header: Style::new().fg(accent).add_modifier(Modifier::BOLD),
 
             link: Style::new().fg(accent).add_modifier(Modifier::UNDERLINED),
             link_prefix: "🔗 ",

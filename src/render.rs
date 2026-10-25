@@ -1,4 +1,6 @@
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment as ColumnAlignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+};
 use ratatui::layout::Alignment as RatatuiAlignment;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -66,6 +68,7 @@ pub fn render_markdown(input: &str, style: &MarkdownStyle, width: u16) -> Render
         list_counters: Vec::new(),
         item_marker: None,
         item_indents: Vec::new(),
+        table: None,
     };
     for event in parser {
         r.handle(event);
@@ -109,6 +112,15 @@ struct Renderer<'a> {
     item_marker: Option<String>,
     /// Display width of each enclosing item's marker, for nested indentation.
     item_indents: Vec<usize>,
+    table: Option<TableState>,
+}
+
+/// Cells collected while inside a table; rendered on `TagEnd::Table`.
+struct TableState {
+    alignments: Vec<ColumnAlignment>,
+    /// `rows[0]` is the header row.
+    rows: Vec<Vec<Vec<Span<'static>>>>,
+    row: Vec<Vec<Span<'static>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -239,6 +251,19 @@ impl<'a> Renderer<'a> {
                     .push(UnicodeWidthStr::width(marker.as_str()));
                 self.item_marker = Some(marker);
             }
+            Tag::Table(alignments) => {
+                self.flush_paragraph(self.style.paragraph);
+                self.table = Some(TableState {
+                    alignments,
+                    rows: Vec::new(),
+                    row: Vec::new(),
+                });
+            }
+            Tag::TableCell => {
+                self.spans.clear();
+                self.block_style = self.style.paragraph;
+                self.mods.clear();
+            }
             Tag::Emphasis => self.mods.push(self.style.italic),
             Tag::Strong => self.mods.push(self.style.bold),
             Tag::Strikethrough => self.mods.push(self.style.strikethrough),
@@ -307,6 +332,37 @@ impl<'a> Renderer<'a> {
                     };
                     let width = (self.width as usize).saturating_sub(prefix_w);
                     let lines = layout::code_block_lines(&buf, width, &opts);
+                    self.push_nested_block(lines, &prefix);
+                    if self.output.len() > before && self.list_counters.is_empty() {
+                        self.output.push(Line::default());
+                    }
+                }
+            }
+            TagEnd::TableCell => {
+                let cell = std::mem::take(&mut self.spans);
+                if let Some(t) = &mut self.table {
+                    t.row.push(cell);
+                }
+            }
+            TagEnd::TableHead | TagEnd::TableRow => {
+                if let Some(t) = &mut self.table {
+                    let row = std::mem::take(&mut t.row);
+                    t.rows.push(row);
+                }
+            }
+            TagEnd::Table => {
+                if let Some(t) = self.table.take() {
+                    let before = self.output.len();
+                    let prefix = self.build_cont_prefix();
+                    let prefix_w = UnicodeWidthStr::width(prefix.as_str());
+                    let opts = layout::TableOptions {
+                        alignments: &t.alignments,
+                        border: self.style.table_border,
+                        border_style: self.style.table_border_style,
+                        header_style: self.style.table_header,
+                    };
+                    let width = (self.width as usize).saturating_sub(prefix_w);
+                    let lines = layout::table_lines(&t.rows, width, &opts);
                     self.push_nested_block(lines, &prefix);
                     if self.output.len() > before && self.list_counters.is_empty() {
                         self.output.push(Line::default());
@@ -418,6 +474,13 @@ impl<'a> Renderer<'a> {
 
         self.is_image = false;
 
+        // Inside a table the placeholder stays inline in its cell; the image
+        // isn't tracked since it can't be given a line of its own.
+        if self.table.is_some() {
+            self.spans.push(Span::styled(display, self.style.image));
+            return;
+        }
+
         // Flush any text accumulated before the image so the image placeholder
         // gets its own line.  This is required by `prepare_inline_images`
         // (image-protocol) which replaces the placeholder line with the actual
@@ -450,6 +513,10 @@ impl<'a> Renderer<'a> {
     // ── line flushing ──────────────────────────────────────────
 
     fn flush_paragraph(&mut self, base_style: Style) {
+        // Table cells collect their spans until `TagEnd::TableCell`.
+        if self.table.is_some() {
+            return;
+        }
         let spans = std::mem::take(&mut self.spans);
         if spans.is_empty() && self.item_marker.is_none() {
             return;
@@ -898,6 +965,32 @@ mod tests {
     fn list_items_no_blank_lines_between() {
         let result = render_markdown("- one\n- two\n- three", &default_style(), 80);
         assert_eq!(result.lines.len(), 3, "no blank lines between list items");
+    }
+
+    #[test]
+    fn table_renders_with_header_and_alignment() {
+        let md = "| Name | Qty |\n|------|----:|\n| Pear | 3 |\n| **Fig** | 12 |\n\nafter";
+        let result = render_markdown(md, &default_style(), 80);
+        assert_eq!(
+            texts(&result),
+            [
+                "╭──────┬─────╮",
+                "│ Name │ Qty │",
+                "├──────┼─────┤",
+                "│ Pear │   3 │",
+                "│ Fig  │  12 │",
+                "╰──────┴─────╯",
+                "",
+                "after",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_image_stays_inline_in_cell() {
+        let result = render_markdown("| a |\n|---|\n| ![x](y.png) |", &default_style(), 80);
+        assert!(result.images.is_empty());
+        assert!(result.lines.iter().any(|l| l.to_string().contains("🖼 x")));
     }
 
     #[test]

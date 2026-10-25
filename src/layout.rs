@@ -1,5 +1,6 @@
+use pulldown_cmark::Alignment as ColumnAlignment;
 use ratatui::style::{Color, Style};
-use ratatui::symbols::border;
+use ratatui::symbols::{border, line};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -350,6 +351,113 @@ pub(crate) fn join_words(words: Vec<Word>) -> Vec<Span<'static>> {
     out
 }
 
+// ── Tables ───────────────────────────────────────────────────────────────────
+
+/// Options for [`table_lines`].
+#[derive(Debug, Clone, Copy)]
+pub struct TableOptions<'a> {
+    pub alignments: &'a [ColumnAlignment],
+    pub border: line::Set<'static>,
+    pub border_style: Style,
+    pub header_style: Style,
+}
+
+/// Render a table at its natural width (shrunk and cell-wrapped to fit
+/// `width` if necessary).  `rows[0]` is the header row.
+///
+/// ```text
+/// ╭──────┬─────╮
+/// │ Name │ Qty │
+/// ├──────┼─────┤
+/// │ Pear │   3 │
+/// ╰──────┴─────╯
+/// ```
+pub fn table_lines(
+    rows: &[Vec<Vec<Span<'static>>>],
+    width: usize,
+    opts: &TableOptions,
+) -> Vec<Line<'static>> {
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+    if cols == 0 {
+        return Vec::new();
+    }
+
+    let cell_width = |cell: &[Span]| cell.iter().map(Span::width).sum::<usize>();
+    let mut widths = vec![1; cols];
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell_width(cell));
+        }
+    }
+
+    // `│ a │ b │`: one border per column plus one, and a space on each side.
+    let frame = 3 * cols + 1;
+    let avail = width.saturating_sub(frame).max(cols);
+    while widths.iter().sum::<usize>() > avail {
+        let widest = (0..cols).max_by_key(|&i| widths[i]).expect("cols > 0");
+        if widths[widest] <= 1 {
+            break;
+        }
+        widths[widest] -= 1;
+    }
+
+    let b = opts.border;
+    let bs = opts.border_style;
+    let edge = |left: &str, mid: &str, right: &str| {
+        let mut s = String::from(left);
+        for (i, w) in widths.iter().enumerate() {
+            if i > 0 {
+                s.push_str(mid);
+            }
+            s.push_str(&b.horizontal.repeat(w + 2));
+        }
+        s.push_str(right);
+        Line::from(Span::styled(s, bs))
+    };
+
+    let mut out = vec![edge(b.top_left, b.horizontal_down, b.top_right)];
+    for (r, row) in rows.iter().enumerate() {
+        let wrapped: Vec<Vec<Vec<Span<'static>>>> = (0..cols)
+            .map(|i| {
+                let mut cell = row.get(i).cloned().unwrap_or_default();
+                if r == 0 {
+                    for span in &mut cell {
+                        span.style = span.style.patch(opts.header_style);
+                    }
+                }
+                let lines = wrap_words(split_words(&cell), widths[i], widths[i]);
+                lines.into_iter().map(join_words).collect()
+            })
+            .collect();
+        let height = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
+
+        for k in 0..height {
+            let mut spans = vec![Span::styled(b.vertical.to_string(), bs)];
+            for (i, cell_lines) in wrapped.iter().enumerate() {
+                let content = cell_lines.get(k).cloned().unwrap_or_default();
+                let used: usize = content.iter().map(Span::width).sum();
+                let slack = widths[i].saturating_sub(used);
+                let (left, right) = match opts.alignments.get(i) {
+                    Some(ColumnAlignment::Right) => (slack, 0),
+                    Some(ColumnAlignment::Center) => (slack / 2, slack - slack / 2),
+                    _ => (0, slack),
+                };
+                spans.push(Span::raw(" ".repeat(left + 1)));
+                spans.extend(content);
+                spans.push(Span::raw(" ".repeat(right + 1)));
+                spans.push(Span::styled(b.vertical.to_string(), bs));
+            }
+            out.push(Line::from(spans));
+        }
+
+        if r == 0 && rows.len() > 1 {
+            out.push(edge(b.vertical_right, b.cross, b.vertical_left));
+        }
+    }
+    out.push(edge(b.bottom_left, b.horizontal_up, b.bottom_right));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,5 +581,57 @@ mod tests {
             .map(|l| l.iter().map(Word::text).collect())
             .collect();
         assert_eq!(texts, [vec!["ab"], vec!["abcd"], vec!["efgh"]]);
+    }
+
+    fn table_opts(alignments: &[ColumnAlignment]) -> TableOptions<'_> {
+        TableOptions {
+            alignments,
+            border: line::NORMAL,
+            border_style: Style::default(),
+            header_style: Style::default(),
+        }
+    }
+
+    #[test]
+    fn table_natural_width_and_alignment() {
+        let rows = vec![
+            vec![cell("Name"), cell("Qty")],
+            vec![cell("Pear"), cell("3")],
+        ];
+        let a = [ColumnAlignment::None, ColumnAlignment::Right];
+        let lines = table_lines(&rows, 80, &table_opts(&a));
+        assert_eq!(
+            text(&lines),
+            [
+                "┌──────┬─────┐",
+                "│ Name │ Qty │",
+                "├──────┼─────┤",
+                "│ Pear │   3 │",
+                "└──────┴─────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_shrinks_and_wraps_to_width() {
+        let rows = vec![
+            vec![cell("A"), cell("B")],
+            vec![cell("x"), cell("one two three")],
+        ];
+        let lines = table_lines(&rows, 15, &table_opts(&[]));
+        for l in &lines {
+            assert!(l.width() <= 15, "{l} too wide");
+        }
+        assert_eq!(
+            text(&lines),
+            [
+                "┌───┬─────────┐",
+                "│ A │ B       │",
+                "├───┼─────────┤",
+                "│ x │ one two │",
+                "│   │ three   │",
+                "└───┴─────────┘",
+            ]
+        );
     }
 }
