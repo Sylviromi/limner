@@ -88,6 +88,10 @@ pub struct MarkdownStyle {
     /// Style applied to the language label (e.g. `rust` from ` ```rust `),
     /// shown in the top border or on a header line when borderless.
     pub code_block_language: Style,
+    /// Syntax-highlighting theme for fenced code blocks with a language, or
+    /// `None` to disable.  Requires the `syntax-highlighting` feature
+    /// (ignored otherwise); see `highlight::theme_names()` for valid names.
+    pub syntax_theme: Option<&'static str>,
 
     // ── Tables ──────────────────────────────────────────────────
     /// Line characters for table borders (e.g. `line::ROUNDED`, `line::NORMAL`).
@@ -158,6 +162,7 @@ impl Default for MarkdownStyle {
             code_block_border: Some(border::ROUNDED),
             code_block_border_style: Style::new().fg(Color::Rgb(80, 80, 80)),
             code_block_language: Style::new().fg(accent).add_modifier(Modifier::BOLD),
+            syntax_theme: Some("base16-ocean.dark"),
 
             table_border: line::ROUNDED,
             table_border_style: Style::new().fg(Color::Rgb(80, 80, 80)),

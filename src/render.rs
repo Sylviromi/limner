@@ -325,6 +325,7 @@ impl<'a> Renderer<'a> {
                     let opts = layout::CodeBlockOptions {
                         language: lang.as_deref(),
                         border: self.style.code_block_border,
+                        syntax_theme: self.style.syntax_theme,
                         code_style: self.style.code_block,
                         border_style: self.style.code_block_border_style,
                         language_style: self.style.code_block_language,

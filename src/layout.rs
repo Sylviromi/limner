@@ -28,6 +28,10 @@ pub struct CodeBlockOptions<'a> {
     pub language: Option<&'a str>,
     /// Border characters, or `None` for a borderless block.
     pub border: Option<border::Set<'static>>,
+    /// Syntax-highlighting theme name.  Only used with the
+    /// `syntax-highlighting` feature; unknown languages/themes fall back to
+    /// `code_style`.
+    pub syntax_theme: Option<&'a str>,
     pub code_style: Style,
     pub border_style: Style,
     pub language_style: Style,
@@ -64,7 +68,8 @@ pub fn code_block_lines(code: &str, width: usize, opts: &CodeBlockOptions) -> Ve
     let language_style = opts.language_style.bg(opts.bg);
 
     let code = expand_tabs(code);
-    let logical = plain_code(&code, code_style);
+    let logical = highlight(&code, language, opts.syntax_theme, opts.bg)
+        .unwrap_or_else(|| plain_code(&code, code_style));
     let rows = wrap_code_rows(logical, inner);
 
     let Some(b) = border else {
@@ -116,6 +121,26 @@ pub fn code_block_lines(code: &str, width: usize, opts: &CodeBlockOptions) -> Ve
         border_style,
     )));
     out
+}
+
+#[cfg(feature = "syntax-highlighting")]
+fn highlight(
+    code: &str,
+    language: Option<&str>,
+    theme: Option<&str>,
+    bg: Color,
+) -> Option<Vec<Vec<Span<'static>>>> {
+    crate::highlight::highlight(code, language?, theme?, bg)
+}
+
+#[cfg(not(feature = "syntax-highlighting"))]
+fn highlight(
+    _code: &str,
+    _language: Option<&str>,
+    _theme: Option<&str>,
+    _bg: Color,
+) -> Option<Vec<Vec<Span<'static>>>> {
+    None
 }
 
 fn plain_code(code: &str, style: Style) -> Vec<Vec<Span<'static>>> {
@@ -469,6 +494,7 @@ mod tests {
         CodeBlockOptions {
             language,
             border,
+            syntax_theme: None,
             code_style: Style::default(),
             border_style: Style::default(),
             language_style: Style::default(),

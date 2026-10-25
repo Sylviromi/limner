@@ -37,6 +37,8 @@ pub mod layout;
 pub mod render;
 pub mod style;
 
+#[cfg(feature = "syntax-highlighting")]
+pub mod highlight;
 #[cfg(feature = "image-protocol")]
 pub mod render_image;
 
