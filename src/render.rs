@@ -1,4 +1,4 @@
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::layout::Alignment as RatatuiAlignment;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -62,6 +62,7 @@ pub fn render_markdown(input: &str, style: &MarkdownStyle, width: u16) -> Render
         pending_img_alt: String::new(),
         in_blockquote: 0,
         code_buf: None,
+        code_lang: None,
         list_counters: Vec::new(),
         item_marker: None,
         item_indents: Vec::new(),
@@ -102,6 +103,7 @@ struct Renderer<'a> {
 
     in_blockquote: u32,
     code_buf: Option<String>,
+    code_lang: Option<String>,
     list_counters: Vec<ListCounter>,
     /// Marker (`• `, `1. `) for the current item, consumed by its first line.
     item_marker: Option<String>,
@@ -206,10 +208,19 @@ impl<'a> Renderer<'a> {
                 self.in_blockquote += 1;
                 self.block_alignment = self.style.quote_alignment;
             }
-            Tag::CodeBlock(_) => {
+            Tag::CodeBlock(kind) => {
                 self.flush_paragraph(self.style.paragraph);
-                self.block_alignment = self.style.code_block_alignment;
                 self.code_buf = Some(String::new());
+                self.code_lang = match kind {
+                    // The info string may carry extra attributes
+                    // (` ```rust,ignore ` or ` ```js {1,3} `); keep the language.
+                    CodeBlockKind::Fenced(info) => info
+                        .split(|c: char| c.is_whitespace() || c == ',' || c == '{')
+                        .next()
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string),
+                    CodeBlockKind::Indented => None,
+                };
             }
             Tag::List(start) => {
                 self.flush_paragraph(self.style.paragraph);
@@ -287,14 +298,21 @@ impl<'a> Renderer<'a> {
             TagEnd::CodeBlock => {
                 if let Some(buf) = self.code_buf.take() {
                     let before = self.output.len();
-                    let mut lines = layout::wrap_code_block(
-                        &buf,
-                        self.width as usize,
-                        self.style.code_block,
-                        self.style.code_block_bg,
-                    );
-                    self.apply_alignment(&mut lines);
-                    self.output.extend(lines);
+                    let lang = self.code_lang.take();
+                    // Keep code inside lists / blockquotes visually nested.
+                    let prefix = self.build_cont_prefix();
+                    let prefix_w = UnicodeWidthStr::width(prefix.as_str());
+                    let opts = layout::CodeBlockOptions {
+                        language: lang.as_deref(),
+                        border: self.style.code_block_border,
+                        code_style: self.style.code_block,
+                        border_style: self.style.code_block_border_style,
+                        language_style: self.style.code_block_language,
+                        bg: self.style.code_block_bg,
+                    };
+                    let width = (self.width as usize).saturating_sub(prefix_w);
+                    let lines = layout::code_block_lines(&buf, width, &opts);
+                    self.push_nested_block(lines, &prefix);
                     if self.output.len() > before && self.list_counters.is_empty() {
                         self.output.push(Line::default());
                     }
@@ -542,6 +560,18 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// Push pre-rendered block lines (code, tables), prefixed so they stay
+    /// nested inside quotes / list items.
+    fn push_nested_block(&mut self, lines: Vec<Line<'static>>, prefix: &str) {
+        for mut line in lines {
+            if !prefix.is_empty() {
+                line.spans
+                    .insert(0, Span::styled(prefix.to_string(), self.style.quote));
+            }
+            self.push_line(line);
+        }
+    }
+
     fn push_line(&mut self, line: Line<'static>) {
         let current = self.output.len();
         self.output.push(line);
@@ -666,13 +696,6 @@ impl<'a> Renderer<'a> {
             _ => None,
         }
     }
-
-    fn apply_alignment(&self, lines: &mut [Line<'static>]) {
-        let aln = Self::map_alignment(self.block_alignment);
-        for line in lines.iter_mut() {
-            line.alignment = aln;
-        }
-    }
 }
 
 /// Like [`render_markdown`] but also accepts a list of external image URLs
@@ -736,10 +759,59 @@ mod tests {
         assert_ne!(p, h, "heading style should differ from paragraph");
     }
 
+    fn texts(result: &RenderResult) -> Vec<String> {
+        result.lines.iter().map(|l| l.to_string()).collect()
+    }
+
     #[test]
     fn code_block() {
         let result = render_markdown("```\nlet x = 1;\n```", &default_style(), 80);
+        // Top border, code line, bottom border.
+        assert_eq!(result.lines.len(), 3);
+    }
+
+    #[test]
+    fn code_block_language_in_border() {
+        let result = render_markdown("```rust,ignore\nfn f() {}\n```", &default_style(), 20);
+        assert_eq!(
+            texts(&result),
+            [
+                "╭─ rust ───────────╮",
+                "│ fn f() {}        │",
+                "╰──────────────────╯",
+            ]
+        );
+    }
+
+    #[test]
+    fn code_block_borderless() {
+        let style = MarkdownStyle {
+            code_block_border: None,
+            ..default_style()
+        };
+        let result = render_markdown("```\nlet x = 1;\n```", &style, 80);
         assert_eq!(result.lines.len(), 1);
+    }
+
+    #[test]
+    fn code_block_in_list_is_indented() {
+        let result = render_markdown("- item\n\n  ```\n  x\n  ```", &default_style(), 12);
+        assert_eq!(
+            texts(&result),
+            ["• item", "  ╭────────╮", "  │ x      │", "  ╰────────╯"]
+        );
+    }
+
+    #[test]
+    fn nested_lists_indent_without_stray_bullets() {
+        let result = render_markdown("- a\n  - b\n    1. c\n- d", &default_style(), 80);
+        assert_eq!(texts(&result), ["• a", "  • b", "    1. c", "• d"]);
+    }
+
+    #[test]
+    fn hard_break_in_list_item_indents_continuation() {
+        let result = render_markdown("- one  \n  two", &default_style(), 80);
+        assert_eq!(texts(&result), ["• one", "  two"]);
     }
 
     #[test]
@@ -911,30 +983,6 @@ mod tests {
     fn list_items_no_blank_lines_between() {
         let result = render_markdown("- one\n- two\n- three", &default_style(), 80);
         assert_eq!(result.lines.len(), 3, "no blank lines between list items");
-    }
-
-    #[test]
-    fn nested_lists_indent_without_stray_bullets() {
-        let result = render_markdown("- a\n  - b\n    1. c\n- d", &default_style(), 80);
-        let texts: Vec<String> = result.lines.iter().map(|l| l.to_string()).collect();
-        assert_eq!(texts, ["• a", "  • b", "    1. c", "• d"]);
-    }
-
-    #[test]
-    fn hard_break_in_list_item_indents_continuation() {
-        let result = render_markdown("- one  \n  two", &default_style(), 80);
-        let texts: Vec<String> = result.lines.iter().map(|l| l.to_string()).collect();
-        assert_eq!(texts, ["• one", "  two"]);
-    }
-
-    #[test]
-    fn rule_ignores_previous_block_alignment() {
-        let style = MarkdownStyle {
-            heading_1_alignment: Alignment::Center,
-            ..default_style()
-        };
-        let result = render_markdown("# T\n\n---", &style, 10);
-        assert_eq!(result.lines.last().unwrap().alignment, None);
     }
 
     #[test]

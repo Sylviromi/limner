@@ -1,67 +1,158 @@
 use ratatui::style::{Color, Style};
+use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Number of columns a tab advances to (next multiple of this).
 const TAB_WIDTH: usize = 4;
 
+// ── Code blocks ──────────────────────────────────────────────────────────────
+
 /// Split a code block into pre-wrapped lines, each with a full-width
 /// background span so the background colour fills the entire terminal
 /// width (for the code-block look).
 pub fn wrap_code_block(code: &str, width: usize, style: Style, bg: Color) -> Vec<Line<'static>> {
     let w = width.max(1);
-    let mut out = Vec::new();
+    let style = style.bg(bg);
+    wrap_code_rows(plain_code(code, style), w)
+        .into_iter()
+        .map(|row| Line::from(pad_row(row, w, style)))
+        .collect()
+}
 
-    for src_line in code.lines() {
-        let src_line = expand_tabs(src_line);
-        let src_line = src_line.as_str();
-        if src_line.is_empty() {
-            // Preserve empty lines as blank code lines.
-            out.push(make_code_line("", w, style, bg));
-            continue;
-        }
+/// Options for [`code_block_lines`].
+#[derive(Debug, Clone, Copy)]
+pub struct CodeBlockOptions<'a> {
+    /// Language label (e.g. `"rust"`), shown in the top border.
+    pub language: Option<&'a str>,
+    /// Border characters, or `None` for a borderless block.
+    pub border: Option<border::Set<'static>>,
+    pub code_style: Style,
+    pub border_style: Style,
+    pub language_style: Style,
+    pub bg: Color,
+}
 
-        let cols = UnicodeWidthStr::width(src_line);
-        if cols <= w {
-            out.push(make_code_line(src_line, w, style, bg));
-        } else {
-            // Hard-wrap long lines at width boundary.
-            let mut remain = src_line;
-            while !remain.is_empty() {
-                let wrap_at = find_wrap_col(remain, w);
-                let (part, rest) = remain.split_at(wrap_at);
-                out.push(make_code_line(part, w, style, bg));
-                remain = rest;
-            }
+/// Render a code block, filling `width`, optionally framed by a border with
+/// the language label embedded in the top edge:
+///
+/// ```text
+/// ╭─ rust ───────────╮
+/// │ let x = 1;       │
+/// ╰──────────────────╯
+/// ```
+///
+/// Without a border, the language label (if any) is shown on its own header
+/// line above the code.
+pub fn code_block_lines(code: &str, width: usize, opts: &CodeBlockOptions) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let language = opts.language.filter(|l| !l.is_empty());
+    let label_width = language.map_or(0, |l| UnicodeWidthStr::width(l) + 2);
+
+    // Border + one column of padding on each side.
+    const FRAME: usize = 4;
+    let border = opts.border.filter(|_| width > FRAME);
+    let inner = if border.is_some() {
+        width - FRAME
+    } else {
+        width
+    };
+
+    let code_style = opts.code_style.bg(opts.bg);
+    let border_style = opts.border_style.bg(opts.bg);
+    let language_style = opts.language_style.bg(opts.bg);
+
+    let code = expand_tabs(code);
+    let logical = plain_code(&code, code_style);
+    let rows = wrap_code_rows(logical, inner);
+
+    let Some(b) = border else {
+        let mut out = Vec::with_capacity(rows.len() + 1);
+        if let Some(lang) = language.filter(|_| label_width <= inner) {
+            out.push(Line::from(Span::styled(
+                pad(&format!(" {lang} "), inner),
+                language_style,
+            )));
         }
+        out.extend(
+            rows.into_iter()
+                .map(|r| Line::from(pad_row(r, inner, code_style))),
+        );
+        return out;
+    };
+
+    let mut out = Vec::with_capacity(rows.len() + 2);
+
+    // Top edge: `╭─ lang ───╮`, or a plain edge if the label doesn't fit.
+    let mut top = vec![Span::styled(b.top_left.to_string(), border_style)];
+    let mut used = 2;
+    if let Some(lang) = language.filter(|_| label_width + 4 <= width) {
+        top.push(Span::styled(b.horizontal_top.to_string(), border_style));
+        top.push(Span::styled(format!(" {lang} "), language_style));
+        used += 1 + label_width;
+    }
+    top.push(Span::styled(
+        b.horizontal_top.repeat(width - used),
+        border_style,
+    ));
+    top.push(Span::styled(b.top_right.to_string(), border_style));
+    out.push(Line::from(top));
+
+    for row in rows {
+        let mut spans = vec![Span::styled(format!("{} ", b.vertical_left), border_style)];
+        spans.extend(pad_row(row, inner, code_style));
+        spans.push(Span::styled(format!(" {}", b.vertical_right), border_style));
+        out.push(Line::from(spans));
     }
 
+    out.push(Line::from(Span::styled(
+        format!(
+            "{}{}{}",
+            b.bottom_left,
+            b.horizontal_bottom.repeat(width - 2),
+            b.bottom_right
+        ),
+        border_style,
+    )));
     out
 }
 
-fn make_code_line(text: &str, width: usize, style: Style, bg: Color) -> Line<'static> {
-    let padding = width.saturating_sub(UnicodeWidthStr::width(text));
-    let mut s = text.to_string();
-    if padding > 0 {
-        s.push_str(&" ".repeat(padding));
-    }
-    Line::from(Span::styled(s, style.bg(bg)))
+fn plain_code(code: &str, style: Style) -> Vec<Vec<Span<'static>>> {
+    code.lines()
+        .map(|l| vec![Span::styled(expand_tabs(l), style)])
+        .collect()
 }
 
-/// Find the byte index to break a line so that its displayed width ≤ `max_width`.
-///
-/// Always keeps at least one char, so a char wider than `max_width` can't
-/// stall the caller's loop.
-fn find_wrap_col(line: &str, max_width: usize) -> usize {
-    let mut col = 0;
-    for (i, c) in line.char_indices() {
-        let cw = c.width().unwrap_or(0);
-        if col + cw > max_width && i > 0 {
-            return i;
+/// Hard-wrap styled code lines so no row is wider than `width` columns.
+fn wrap_code_rows(lines: Vec<Vec<Span<'static>>>, width: usize) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for line in lines {
+        let mut row: Vec<Span<'static>> = Vec::new();
+        let mut col = 0;
+        for span in line {
+            let mut text = String::new();
+            for c in span.content.chars() {
+                let cw = c.width().unwrap_or(0);
+                // Always place at least one char per row so characters wider
+                // than `width` can't stall the loop.
+                if col + cw > width && col > 0 {
+                    if !text.is_empty() {
+                        row.push(Span::styled(std::mem::take(&mut text), span.style));
+                    }
+                    out.push(std::mem::take(&mut row));
+                    col = 0;
+                }
+                text.push(c);
+                col += cw;
+            }
+            if !text.is_empty() {
+                row.push(Span::styled(text, span.style));
+            }
         }
-        col += cw;
+        out.push(row);
     }
-    line.len()
+    out
 }
 
 fn expand_tabs(line: &str) -> String {
@@ -71,21 +162,64 @@ fn expand_tabs(line: &str) -> String {
     let mut out = String::with_capacity(line.len() + TAB_WIDTH);
     let mut col = 0;
     for c in line.chars() {
-        if c == '\t' {
-            let n = TAB_WIDTH - col % TAB_WIDTH;
-            out.push_str(&" ".repeat(n));
-            col += n;
-        } else {
-            out.push(c);
-            col += c.width().unwrap_or(0);
+        match c {
+            '\t' => {
+                let n = TAB_WIDTH - col % TAB_WIDTH;
+                out.push_str(&" ".repeat(n));
+                col += n;
+            }
+            '\n' => {
+                out.push(c);
+                col = 0;
+            }
+            _ => {
+                out.push(c);
+                col += c.width().unwrap_or(0);
+            }
         }
     }
     out
 }
 
+/// Right-pad `text` with spaces to `width` columns.
+fn pad(text: &str, width: usize) -> String {
+    let padding = width.saturating_sub(UnicodeWidthStr::width(text));
+    let mut s = String::with_capacity(text.len() + padding);
+    s.push_str(text);
+    s.push_str(&" ".repeat(padding));
+    s
+}
+
+/// Right-pad a row of spans with a `style`d filler span to `width` columns.
+fn pad_row(mut row: Vec<Span<'static>>, width: usize, style: Style) -> Vec<Span<'static>> {
+    let used: usize = row.iter().map(Span::width).sum();
+    if used < width {
+        row.push(Span::styled(" ".repeat(width - used), style));
+    }
+    row
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opts<'a>(
+        language: Option<&'a str>,
+        border: Option<border::Set<'static>>,
+    ) -> CodeBlockOptions<'a> {
+        CodeBlockOptions {
+            language,
+            border,
+            code_style: Style::default(),
+            border_style: Style::default(),
+            language_style: Style::default(),
+            bg: Color::Black,
+        }
+    }
+
+    fn text(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(|l| l.to_string()).collect()
+    }
 
     #[test]
     fn short_line_padded() {
@@ -118,5 +252,40 @@ mod tests {
     fn tabs_expand_to_tab_stops() {
         assert_eq!(expand_tabs("\tx"), "    x");
         assert_eq!(expand_tabs("ab\tx"), "ab  x");
+        assert_eq!(expand_tabs("ab\n\tx"), "ab\n    x");
+    }
+
+    #[test]
+    fn bordered_with_language() {
+        let lines = code_block_lines("let x = 1;", 20, &opts(Some("rust"), Some(border::ROUNDED)));
+        assert_eq!(
+            text(&lines),
+            [
+                "╭─ rust ───────────╮",
+                "│ let x = 1;       │",
+                "╰──────────────────╯",
+            ]
+        );
+    }
+
+    #[test]
+    fn bordered_wraps_inside_frame() {
+        let lines = code_block_lines("abcdefgh", 8, &opts(None, Some(border::PLAIN)));
+        assert_eq!(
+            text(&lines),
+            ["┌──────┐", "│ abcd │", "│ efgh │", "└──────┘"]
+        );
+    }
+
+    #[test]
+    fn label_dropped_when_too_narrow() {
+        let lines = code_block_lines("x", 8, &opts(Some("typescript"), Some(border::PLAIN)));
+        assert_eq!(lines[0].to_string(), "┌──────┐");
+    }
+
+    #[test]
+    fn borderless_language_header() {
+        let lines = code_block_lines("x", 6, &opts(Some("py"), None));
+        assert_eq!(text(&lines), [" py   ", "x     "]);
     }
 }

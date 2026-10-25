@@ -24,16 +24,14 @@
 //! let style = MarkdownStyle {
 //!     paragraph_alignment: Alignment::Justify,
 //!     heading_1_alignment: Alignment::Center,
-//!     code_block_alignment: Alignment::Right,
 //!     ..MarkdownStyle::default()
 //! };
 //!
 //! let _result = render_markdown("# Title\n\nLong paragraph here...", &style, 60);
 //! ```
 //!
-//! See the [`MarkdownStyle`] struct and [`Alignment`] enum for all available
-//! options.  The [`render_markdown`] function and [`MarkdownStyle`] struct
-//! for details.
+//! See the [`render_markdown`] function, the [`MarkdownStyle`] struct, and
+//! the [`Alignment`] enum for all available options.
 
 pub mod layout;
 pub mod render;

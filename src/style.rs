@@ -1,4 +1,5 @@
 use ratatui::prelude::{Color, Modifier, Style};
+use ratatui::symbols::border;
 
 /// Per-section text alignment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -33,14 +34,14 @@ pub enum Alignment {
 /// };
 /// ```
 ///
-/// # Example – justified paragraphs with right-aligned code blocks
+/// # Example – justified paragraphs with square code-block borders
 ///
 /// ```rust
 /// # use limner::{Alignment, MarkdownStyle};
-/// # use ratatui::prelude::*;
+/// # use ratatui::symbols::border;
 /// let style = MarkdownStyle {
 ///     paragraph_alignment: Alignment::Justify,
-///     code_block_alignment: Alignment::Right,
+///     code_block_border: Some(border::PLAIN),
 ///     ..MarkdownStyle::default()
 /// };
 /// ```
@@ -79,8 +80,14 @@ pub struct MarkdownStyle {
     pub code_block: Style,
     /// Full-width background colour for code blocks.
     pub code_block_bg: Color,
-    /// Alignment for code-block lines.
-    pub code_block_alignment: Alignment,
+    /// Border drawn around code blocks (e.g. `border::ROUNDED`,
+    /// `border::PLAIN`), or `None` for a borderless block.
+    pub code_block_border: Option<border::Set<'static>>,
+    /// Style applied to the code-block border characters.
+    pub code_block_border_style: Style,
+    /// Style applied to the language label (e.g. `rust` from ` ```rust `),
+    /// shown in the top border or on a header line when borderless.
+    pub code_block_language: Style,
 
     // ── Links ───────────────────────────────────────────────────
     /// Style applied to link text.
@@ -140,7 +147,9 @@ impl Default for MarkdownStyle {
 
             code_block: Style::new().fg(warm),
             code_block_bg: Color::Rgb(25, 25, 25),
-            code_block_alignment: Alignment::Left,
+            code_block_border: Some(border::ROUNDED),
+            code_block_border_style: Style::new().fg(Color::Rgb(80, 80, 80)),
+            code_block_language: Style::new().fg(accent).add_modifier(Modifier::BOLD),
 
             link: Style::new().fg(accent).add_modifier(Modifier::UNDERLINED),
             link_prefix: "🔗 ",

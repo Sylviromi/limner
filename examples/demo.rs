@@ -216,23 +216,31 @@ fn sections(
             .leak(),
             style: MarkdownStyle { ..base.clone() },
         },
-        // 12 ── Code block centered ─────────────────────────────
+        // 12 ── Code block with language ────────────────────────
         Section {
-            label: "Code block — Center",
-            text: txt("```rust\nfn greet() {\n    println!(\"hello\");\n}\n```").leak(),
+            label: "Code block — language (highlighted with --features syntax-highlighting)",
+            text: txt("```rust\nfn greet(name: &str) {\n    // say hello\n    println!(\"hello, {name}\");\n}\n```").leak(),
+            style: MarkdownStyle { ..base.clone() },
+        },
+        // 13 ── Code block borderless ──────────────────────────
+        Section {
+            label: "Code block — borderless",
+            text: txt("```sh\ncargo run --example demo\n```").leak(),
             style: MarkdownStyle {
-                code_block_alignment: Alignment::Center,
+                code_block_border: None,
                 ..base.clone()
             },
         },
-        // 13 ── Code block right ────────────────────────────────
+        // 13b ── Table ─────────────────────────────────────────
         Section {
-            label: "Code block — Right",
-            text: txt("```\nfn greet() {\n    println!(\"hello\");\n}\n```").leak(),
-            style: MarkdownStyle {
-                code_block_alignment: Alignment::Right,
-                ..base.clone()
-            },
+            label: "Table",
+            text: txt("| Feature | Status | Notes |\n\
+                 |:--------|:------:|------:|\n\
+                 | Tables | **done** | column alignment, wrapping |\n\
+                 | Highlighting | `opt-in` | via syntect |\n\
+                 | Images | ok | [docs](https://docs.rs/limner) |")
+            .leak(),
+            style: MarkdownStyle { ..base.clone() },
         },
         // 14 ── HR centered ─────────────────────────────────────
         Section {
