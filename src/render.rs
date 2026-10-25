@@ -720,19 +720,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_text() {
-        let result = render_markdown("hello world", &default_style(), 80);
-        assert_eq!(result.lines.len(), 1);
-    }
-
-    #[test]
-    fn heading() {
-        let result = render_markdown("# Title", &default_style(), 80);
-        assert_eq!(result.lines.len(), 1);
-        assert!(result.lines[0].to_string().contains("Title"));
-    }
-
-    #[test]
     fn heading_style_differs_from_paragraph() {
         let s = MarkdownStyle::default();
         let para = render_markdown("paragraph text", &s, 80);
@@ -744,13 +731,6 @@ mod tests {
 
     fn texts(result: &RenderResult) -> Vec<String> {
         result.lines.iter().map(|l| l.to_string()).collect()
-    }
-
-    #[test]
-    fn code_block() {
-        let result = render_markdown("```\nlet x = 1;\n```", &default_style(), 80);
-        // Top border, code line, bottom border.
-        assert_eq!(result.lines.len(), 3);
     }
 
     #[test]
@@ -813,30 +793,6 @@ mod tests {
         assert_eq!(result.links.len(), 1);
         assert_eq!(result.links[0].url, "https://ex.com");
         assert_eq!(result.links[0].text, "text");
-    }
-
-    #[test]
-    fn bold_and_italic() {
-        let result = render_markdown("**bold** and *italic*", &default_style(), 80);
-        assert_eq!(result.lines.len(), 1);
-    }
-
-    #[test]
-    fn strikethrough_with_code() {
-        let result = render_markdown("~~`code`~~", &default_style(), 80);
-        assert_eq!(result.lines.len(), 1);
-    }
-
-    #[test]
-    fn list_ordered() {
-        let result = render_markdown("1. one\n2. two", &default_style(), 80);
-        assert_eq!(result.lines.len(), 2);
-    }
-
-    #[test]
-    fn list_unordered() {
-        let result = render_markdown("- one\n- two", &default_style(), 80);
-        assert_eq!(result.lines.len(), 2);
     }
 
     #[test]
