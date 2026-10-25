@@ -199,6 +199,157 @@ fn pad_row(mut row: Vec<Span<'static>>, width: usize, style: Style) -> Vec<Span<
     row
 }
 
+// ── Word wrapping ────────────────────────────────────────────────────────────
+
+/// A whitespace-delimited word made of one or more styled pieces
+/// (e.g. `**bold**rest` is one word with two pieces).
+#[derive(Debug, Clone)]
+pub(crate) struct Word {
+    pub pieces: Vec<Span<'static>>,
+    pub width: usize,
+}
+
+#[cfg(test)]
+impl Word {
+    pub fn text(&self) -> String {
+        self.pieces.iter().map(|p| p.content.as_ref()).collect()
+    }
+}
+
+/// Split styled spans into words on ASCII whitespace, keeping each piece's
+/// style.  Runs of whitespace collapse to a single word boundary.
+pub(crate) fn split_words(spans: &[Span<'static>]) -> Vec<Word> {
+    let mut words = Vec::new();
+    let mut pieces: Vec<Span<'static>> = Vec::new();
+    let mut text = String::new();
+    let mut width = 0;
+
+    for span in spans {
+        for ch in span.content.chars() {
+            if ch.is_ascii_whitespace() {
+                if !text.is_empty() {
+                    pieces.push(Span::styled(std::mem::take(&mut text), span.style));
+                }
+                if !pieces.is_empty() {
+                    words.push(Word {
+                        pieces: std::mem::take(&mut pieces),
+                        width: std::mem::take(&mut width),
+                    });
+                }
+            } else {
+                text.push(ch);
+                width += ch.width().unwrap_or(0);
+            }
+        }
+        if !text.is_empty() {
+            pieces.push(Span::styled(std::mem::take(&mut text), span.style));
+        }
+    }
+    if !pieces.is_empty() {
+        words.push(Word { pieces, width });
+    }
+    words
+}
+
+/// Greedy word wrap: the first line may be `first` columns wide, the rest
+/// `cont`.  Words longer than a line are hard-split.
+pub(crate) fn wrap_words(words: Vec<Word>, first: usize, cont: usize) -> Vec<Vec<Word>> {
+    let mut lines: Vec<Vec<Word>> = Vec::new();
+    let mut current: Vec<Word> = Vec::new();
+    let mut current_width = 0;
+
+    for word in words {
+        let avail = if lines.is_empty() { first } else { cont }.max(1);
+        let needed = if current.is_empty() {
+            word.width
+        } else {
+            current_width + 1 + word.width
+        };
+        if needed <= avail {
+            current_width = needed;
+            current.push(word);
+            continue;
+        }
+        if !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        let avail = if lines.is_empty() { first } else { cont }.max(1);
+        let mut chunks = split_word(word, avail, cont.max(1));
+        let last = chunks.pop().expect("split_word returns at least one chunk");
+        lines.extend(chunks.into_iter().map(|c| vec![c]));
+        current_width = last.width;
+        current.push(last);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Hard-split a word into chunks: the first at most `first` columns, the
+/// rest at most `rest`.  Always places at least one char per chunk.
+fn split_word(word: Word, first: usize, rest: usize) -> Vec<Word> {
+    if word.width <= first {
+        return vec![word];
+    }
+    let mut chunks = Vec::new();
+    let mut cur = Word {
+        pieces: Vec::new(),
+        width: 0,
+    };
+    for piece in word.pieces {
+        let mut text = String::new();
+        for c in piece.content.chars() {
+            let cw = c.width().unwrap_or(0);
+            let limit = if chunks.is_empty() { first } else { rest };
+            if cur.width + cw > limit && cur.width > 0 {
+                if !text.is_empty() {
+                    cur.pieces
+                        .push(Span::styled(std::mem::take(&mut text), piece.style));
+                }
+                chunks.push(std::mem::replace(
+                    &mut cur,
+                    Word {
+                        pieces: Vec::new(),
+                        width: 0,
+                    },
+                ));
+            }
+            text.push(c);
+            cur.width += cw;
+        }
+        if !text.is_empty() {
+            cur.pieces.push(Span::styled(text, piece.style));
+        }
+    }
+    chunks.push(cur);
+    chunks
+}
+
+/// Style for the gap between two words: if they share a style at the
+/// boundary (e.g. both inside one link), the gap keeps it so underlines and
+/// backgrounds stay continuous.
+pub(crate) fn gap_style(prev: &Word, next: &Word) -> Style {
+    match (prev.pieces.last(), next.pieces.first()) {
+        (Some(a), Some(b)) if a.style == b.style => a.style,
+        _ => Style::default(),
+    }
+}
+
+/// Join words with single spaces into spans.
+pub(crate) fn join_words(words: Vec<Word>) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut prev: Option<Word> = None;
+    for word in words {
+        if let Some(p) = &prev {
+            out.push(Span::styled(" ", gap_style(p, &word)));
+        }
+        out.extend(word.pieces.iter().cloned());
+        prev = Some(word);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +370,10 @@ mod tests {
 
     fn text(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    fn cell(s: &str) -> Vec<Span<'static>> {
+        vec![Span::raw(s.to_string())]
     }
 
     #[test]
@@ -287,5 +442,36 @@ mod tests {
     fn borderless_language_header() {
         let lines = code_block_lines("x", 6, &opts(Some("py"), None));
         assert_eq!(text(&lines), [" py   ", "x     "]);
+    }
+
+    #[test]
+    fn split_words_keeps_piece_styles() {
+        let bold = Style::new().bold();
+        let words = split_words(&[Span::styled("bold", bold), Span::raw("rest and")]);
+        assert_eq!(words.len(), 2);
+        assert_eq!(words[0].text(), "boldrest");
+        assert_eq!(words[0].pieces[0].style, bold);
+        assert_eq!(words[0].pieces[1].style, Style::default());
+    }
+
+    #[test]
+    fn split_words_contractions_and_quotes() {
+        let spans = [
+            Span::raw("it"),
+            Span::raw("\u{2019}"),
+            Span::raw("s a \u{201C}test\u{201D}"),
+        ];
+        let texts: Vec<_> = split_words(&spans).iter().map(Word::text).collect();
+        assert_eq!(texts, ["it\u{2019}s", "a", "\u{201C}test\u{201D}"]);
+    }
+
+    #[test]
+    fn wrap_words_hard_splits_long_words() {
+        let lines = wrap_words(split_words(&cell("ab abcdefgh")), 4, 4);
+        let texts: Vec<Vec<String>> = lines
+            .iter()
+            .map(|l| l.iter().map(Word::text).collect())
+            .collect();
+        assert_eq!(texts, [vec!["ab"], vec!["abcd"], vec!["efgh"]]);
     }
 }

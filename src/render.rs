@@ -117,11 +117,6 @@ enum ListCounter {
     Ordered(u64),
 }
 
-struct StyledWord {
-    text: String,
-    style: Style,
-}
-
 // ── Event handling ───────────────────────────────────────────────────────────
 
 impl<'a> Renderer<'a> {
@@ -460,9 +455,13 @@ impl<'a> Renderer<'a> {
             return;
         }
 
-        match self.block_alignment {
-            Alignment::Justify => self.flush_justified(spans, base_style),
-            _ => self.flush_simple(spans, base_style),
+        // Plain top-level text is left to ratatui's own wrapping.  Justified
+        // text, and text with a prefix (quotes, list items) that must repeat
+        // on every wrapped line, is wrapped here.
+        if self.block_alignment == Alignment::Justify || !self.build_cont_prefix().is_empty() {
+            self.flush_wrapped(spans, base_style);
+        } else {
+            self.flush_simple(spans, base_style);
         }
     }
 
@@ -476,25 +475,23 @@ impl<'a> Renderer<'a> {
         line_spans.extend(spans);
 
         let mut line = Line::from(line_spans);
-        line.alignment = match self.block_alignment {
-            Alignment::Center => Some(RatatuiAlignment::Center),
-            Alignment::Right => Some(RatatuiAlignment::Right),
-            _ => None,
-        };
+        line.alignment = Self::map_alignment(self.block_alignment);
         self.push_line(line);
     }
 
-    fn flush_justified(&mut self, spans: Vec<Span<'static>>, base_style: Style) {
+    fn flush_wrapped(&mut self, spans: Vec<Span<'static>>, base_style: Style) {
+        let justify = self.block_alignment == Alignment::Justify;
+        let alignment = Self::map_alignment(self.block_alignment);
         let first_prefix = self.build_first_prefix();
         let cont_prefix = self.build_cont_prefix();
 
         let first_pw = UnicodeWidthStr::width(first_prefix.as_str());
         let cont_pw = UnicodeWidthStr::width(cont_prefix.as_str());
 
-        let words = Self::spans_to_words(&spans);
+        let words = layout::split_words(&spans);
         if words.is_empty() {
             let mut line = Line::from(Span::styled(first_prefix, base_style));
-            line.alignment = None;
+            line.alignment = alignment;
             self.push_line(line);
             return;
         }
@@ -512,51 +509,37 @@ impl<'a> Renderer<'a> {
             .saturating_sub(1)
             .max(1);
 
-        let word_lines = self.justify_word_wrap(&words, first_avail, cont_avail);
+        let word_lines = layout::wrap_words(words, first_avail, cont_avail);
         let total = word_lines.len();
 
-        for (i, wl) in word_lines.iter().enumerate() {
+        for (i, wl) in word_lines.into_iter().enumerate() {
             let prefix = if i == 0 { &first_prefix } else { &cont_prefix };
             let avail = if i == 0 { first_avail } else { cont_avail };
-            let is_last = i == total - 1;
 
             let mut line_spans: Vec<Span<'static>> = Vec::new();
             if !prefix.is_empty() {
                 line_spans.push(Span::styled(prefix.to_string(), base_style));
             }
 
-            if is_last {
+            // The last line of a justified paragraph stays left-aligned.
+            let gaps = wl.len().saturating_sub(1);
+            if justify && i + 1 < total && gaps > 0 {
+                let text_width: usize = wl.iter().map(|w| w.width).sum::<usize>() + gaps;
+                let deficit = avail.saturating_sub(text_width);
                 for (j, word) in wl.iter().enumerate() {
-                    if j > 0 {
-                        line_spans.push(Span::raw(" "));
+                    line_spans.extend(word.pieces.iter().cloned());
+                    if let Some(next) = wl.get(j + 1) {
+                        let n = 1 + deficit / gaps + usize::from(j < deficit % gaps);
+                        line_spans.push(Span::styled(" ".repeat(n), layout::gap_style(word, next)));
                     }
-                    line_spans.push(Span::styled(word.text.clone(), word.style));
                 }
             } else {
-                let gaps = wl.len().saturating_sub(1);
-                if gaps == 0 {
-                    line_spans.push(Span::styled(wl[0].text.clone(), wl[0].style));
-                } else {
-                    let word_widths: usize = wl
-                        .iter()
-                        .map(|w| UnicodeWidthStr::width(w.text.as_str()))
-                        .sum();
-                    let text_width = word_widths + gaps;
-                    let deficit = avail.saturating_sub(text_width);
-                    let extra_per = deficit / gaps;
-                    let remainder = deficit % gaps;
-
-                    for (j, word) in wl.iter().enumerate() {
-                        line_spans.push(Span::styled(word.text.clone(), word.style));
-                        if j < gaps {
-                            let spaces = 1 + extra_per + if j < remainder { 1 } else { 0 };
-                            line_spans.push(Span::raw(" ".repeat(spaces)));
-                        }
-                    }
-                }
+                line_spans.extend(layout::join_words(wl));
             }
 
-            self.push_line(Line::from(line_spans));
+            let mut line = Line::from(line_spans);
+            line.alignment = alignment;
+            self.push_line(line);
         }
     }
 
@@ -619,74 +602,6 @@ impl<'a> Renderer<'a> {
             .repeat(self.in_blockquote as usize);
         p.push_str(&" ".repeat(self.item_indents.iter().sum()));
         p
-    }
-
-    fn spans_to_words(spans: &[Span<'static>]) -> Vec<StyledWord> {
-        let mut words: Vec<StyledWord> = Vec::new();
-        let mut current = String::new();
-        let mut current_style: Option<Style> = None;
-
-        for span in spans {
-            for ch in span.content.chars() {
-                if ch.is_ascii_whitespace() {
-                    if !current.is_empty() {
-                        words.push(StyledWord {
-                            text: std::mem::take(&mut current),
-                            style: current_style.unwrap_or(span.style),
-                        });
-                        current_style = None;
-                    }
-                } else {
-                    if current.is_empty() {
-                        current_style = Some(span.style);
-                    }
-                    current.push(ch);
-                }
-            }
-        }
-        if !current.is_empty() {
-            words.push(StyledWord {
-                text: current,
-                style: current_style.unwrap_or_default(),
-            });
-        }
-        words
-    }
-
-    fn justify_word_wrap<'b>(
-        &self,
-        words: &'b [StyledWord],
-        first_avail: usize,
-        cont_avail: usize,
-    ) -> Vec<Vec<&'b StyledWord>> {
-        let mut lines: Vec<Vec<&StyledWord>> = Vec::new();
-        let mut current: Vec<&StyledWord> = Vec::new();
-        let mut current_width: usize = 0;
-
-        for word in words {
-            let w = UnicodeWidthStr::width(word.text.as_str());
-            let avail = if lines.is_empty() {
-                first_avail
-            } else {
-                cont_avail
-            };
-
-            if current.is_empty() {
-                current.push(word);
-                current_width = w;
-            } else if current_width + 1 + w <= avail {
-                current.push(word);
-                current_width += 1 + w;
-            } else {
-                lines.push(current);
-                current = vec![word];
-                current_width = w;
-            }
-        }
-        if !current.is_empty() {
-            lines.push(current);
-        }
-        lines
     }
 
     fn map_alignment(aln: Alignment) -> Option<RatatuiAlignment> {
@@ -986,26 +901,41 @@ mod tests {
     }
 
     #[test]
-    fn spans_to_words_contractions() {
-        let spans = vec![
-            Span::raw("it"),
-            Span::raw("\u{2019}"),
-            Span::raw("s a test"),
-        ];
-        let words = Renderer::spans_to_words(&spans);
-        let texts: Vec<_> = words.iter().map(|w| w.text.as_str()).collect();
-        assert_eq!(texts, ["it\u{2019}s", "a", "test"]);
+    fn wrapped_blockquote_keeps_indicator() {
+        let result = render_markdown("> one two three four five six", &default_style(), 14);
+        let lines = texts(&result);
+        assert!(lines.len() > 1, "{lines:?}");
+        assert!(lines.iter().all(|l| l.starts_with("▍ ")), "{lines:?}");
     }
 
     #[test]
-    fn spans_to_words_quotes() {
-        let spans = vec![
-            Span::raw("\u{201C}"),
-            Span::raw("hello"),
-            Span::raw("\u{201D}"),
-        ];
-        let words = Renderer::spans_to_words(&spans);
-        let texts: Vec<_> = words.iter().map(|w| w.text.as_str()).collect();
-        assert_eq!(texts, ["\u{201C}hello\u{201D}"]);
+    fn wrapped_list_item_is_indented() {
+        let result = render_markdown("- one two three four five six", &default_style(), 14);
+        let lines = texts(&result);
+        assert!(lines[0].starts_with("• "));
+        assert!(lines[1..].iter().all(|l| l.starts_with("  ")), "{lines:?}");
+    }
+
+    #[test]
+    fn rule_ignores_previous_block_alignment() {
+        let style = MarkdownStyle {
+            heading_1_alignment: Alignment::Center,
+            ..default_style()
+        };
+        let result = render_markdown("# T\n\n---", &style, 10);
+        assert_eq!(result.lines.last().unwrap().alignment, None);
+    }
+
+    #[test]
+    fn justify_keeps_mixed_styles_within_a_word() {
+        let style = MarkdownStyle {
+            paragraph_alignment: Alignment::Justify,
+            ..default_style()
+        };
+        let result = render_markdown("**bold**plain", &style, 80);
+        let spans = &result.lines[0].spans;
+        assert_eq!(spans[0].content, "bold");
+        assert_eq!(spans[1].content, "plain");
+        assert_ne!(spans[0].style, spans[1].style);
     }
 }
