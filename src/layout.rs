@@ -67,7 +67,8 @@ pub fn code_block_lines(code: &str, width: usize, opts: &CodeBlockOptions) -> Ve
     let border_style = opts.border_style.bg(opts.bg);
     let language_style = opts.language_style.bg(opts.bg);
 
-    let code = expand_tabs(code);
+    // Blank lines before the closing fence would render as empty rows.
+    let code = expand_tabs(code.trim_end());
     let logical = highlight(&code, language, opts.syntax_theme, opts.bg)
         .unwrap_or_else(|| plain_code(&code, code_style));
     let rows = wrap_code_rows(logical, inner);
@@ -570,6 +571,12 @@ mod tests {
     fn label_dropped_when_too_narrow() {
         let lines = code_block_lines("x", 8, &opts(Some("typescript"), Some(border::PLAIN)));
         assert_eq!(lines[0].to_string(), "┌──────┐");
+    }
+
+    #[test]
+    fn trailing_blank_lines_dropped() {
+        let lines = code_block_lines("x\n\n\n", 8, &opts(None, Some(border::PLAIN)));
+        assert_eq!(text(&lines), ["┌──────┐", "│ x    │", "└──────┘"]);
     }
 
     #[test]
