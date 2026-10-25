@@ -1,6 +1,9 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Number of columns a tab advances to (next multiple of this).
+const TAB_WIDTH: usize = 4;
 
 /// Split a code block into pre-wrapped lines, each with a full-width
 /// background span so the background colour fills the entire terminal
@@ -10,6 +13,8 @@ pub fn wrap_code_block(code: &str, width: usize, style: Style, bg: Color) -> Vec
     let mut out = Vec::new();
 
     for src_line in code.lines() {
+        let src_line = expand_tabs(src_line);
+        let src_line = src_line.as_str();
         if src_line.is_empty() {
             // Preserve empty lines as blank code lines.
             out.push(make_code_line("", w, style, bg));
@@ -44,16 +49,38 @@ fn make_code_line(text: &str, width: usize, style: Style, bg: Color) -> Line<'st
 }
 
 /// Find the byte index to break a line so that its displayed width ≤ `max_width`.
+///
+/// Always keeps at least one char, so a char wider than `max_width` can't
+/// stall the caller's loop.
 fn find_wrap_col(line: &str, max_width: usize) -> usize {
     let mut col = 0;
     for (i, c) in line.char_indices() {
-        let cw = UnicodeWidthStr::width(c.to_string().as_str());
-        if col + cw > max_width {
+        let cw = c.width().unwrap_or(0);
+        if col + cw > max_width && i > 0 {
             return i;
         }
         col += cw;
     }
     line.len()
+}
+
+fn expand_tabs(line: &str) -> String {
+    if !line.contains('\t') {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len() + TAB_WIDTH);
+    let mut col = 0;
+    for c in line.chars() {
+        if c == '\t' {
+            let n = TAB_WIDTH - col % TAB_WIDTH;
+            out.push_str(&" ".repeat(n));
+            col += n;
+        } else {
+            out.push(c);
+            col += c.width().unwrap_or(0);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -79,5 +106,17 @@ mod tests {
     fn empty_lines_preserved() {
         let lines = wrap_code_block("a\n\nb", 5, Style::default(), Color::Black);
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn wide_char_wider_than_width_terminates() {
+        let lines = wrap_code_block("日本", 1, Style::default(), Color::Black);
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn tabs_expand_to_tab_stops() {
+        assert_eq!(expand_tabs("\tx"), "    x");
+        assert_eq!(expand_tabs("ab\tx"), "ab  x");
     }
 }
