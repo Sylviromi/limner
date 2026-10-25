@@ -159,9 +159,8 @@ impl<'a> Renderer<'a> {
                 for _ in 0..w {
                     line.push(self.style.hr_char);
                 }
-                let mut l = Line::from(Span::styled(line, self.style.hr_style));
-                l.alignment = Self::map_alignment(self.block_alignment);
-                self.output.push(l);
+                self.output
+                    .push(Line::from(Span::styled(line, self.style.hr_style)));
                 if self.list_counters.is_empty() {
                     self.output.push(Line::default());
                 }
@@ -926,6 +925,16 @@ mod tests {
         let result = render_markdown("- one  \n  two", &default_style(), 80);
         let texts: Vec<String> = result.lines.iter().map(|l| l.to_string()).collect();
         assert_eq!(texts, ["• one", "  two"]);
+    }
+
+    #[test]
+    fn rule_ignores_previous_block_alignment() {
+        let style = MarkdownStyle {
+            heading_1_alignment: Alignment::Center,
+            ..default_style()
+        };
+        let result = render_markdown("# T\n\n---", &style, 10);
+        assert_eq!(result.lines.last().unwrap().alignment, None);
     }
 
     #[test]
