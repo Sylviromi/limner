@@ -34,7 +34,7 @@ Tables · bordered code blocks · optional syntax highlighting · per-section al
 
 ```toml
 [dependencies]
-limner = "0.6"
+limner = "0.7"
 ```
 
 Optional features:
@@ -45,7 +45,7 @@ Optional features:
 | `image-protocol` | Real images via Kitty, Sixel, or iTerm2 graphics |
 
 ```toml
-limner = { version = "0.6", features = ["syntax-highlighting", "image-protocol"] }
+limner = { version = "0.7", features = ["syntax-highlighting", "image-protocol"] }
 ```
 
 ## Quick start
