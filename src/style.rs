@@ -1,5 +1,59 @@
+use std::fmt;
+use std::sync::Arc;
+
 use ratatui::prelude::{Color, Modifier, Style};
 use ratatui::symbols::{border, line};
+use ratatui::text::Span;
+
+type LinkFormatterFn = dyn Fn(&LinkSpans<'_>) -> Vec<Span<'static>> + Send + Sync;
+
+/// A link as handed to a [`LinkFormatter`].
+#[derive(Debug, Clone, Copy)]
+pub struct LinkSpans<'a> {
+    /// Position of the link in `RenderResult::links`.
+    pub index: usize,
+    pub url: &'a str,
+    /// The link's plain text.
+    pub text: &'a str,
+    /// The link's rendered spans, already styled with `MarkdownStyle::link`.
+    pub spans: &'a [Span<'static>],
+}
+
+/// Custom rendering for links, e.g. to add a hint label in front of each one.
+///
+/// The closure gets each link and returns the spans to draw in its place:
+///
+/// ```rust
+/// use limner::{LinkFormatter, MarkdownStyle};
+/// use ratatui::text::Span;
+///
+/// let style = MarkdownStyle {
+///     link_formatter: Some(LinkFormatter::new(|link| {
+///         let mut spans = vec![Span::raw(format!("[{}] ", link.index + 1))];
+///         spans.extend_from_slice(link.spans);
+///         spans
+///     })),
+///     ..MarkdownStyle::default()
+/// };
+/// ```
+#[derive(Clone)]
+pub struct LinkFormatter(Arc<LinkFormatterFn>);
+
+impl LinkFormatter {
+    pub fn new(f: impl Fn(&LinkSpans<'_>) -> Vec<Span<'static>> + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+
+    pub(crate) fn format(&self, link: &LinkSpans<'_>) -> Vec<Span<'static>> {
+        (self.0)(link)
+    }
+}
+
+impl fmt::Debug for LinkFormatter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LinkFormatter(..)")
+    }
+}
 
 /// Per-section text alignment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,6 +160,9 @@ pub struct MarkdownStyle {
     pub link: Style,
     /// Static string prepended to every link (e.g. `"🔗 "` or `""`).
     pub link_prefix: &'static str,
+    /// Replaces each link's spans (after `link_prefix`), or `None` to draw
+    /// links as-is.
+    pub link_formatter: Option<LinkFormatter>,
 
     // ── Blockquotes ─────────────────────────────────────────────
     /// Style applied to blockquote text.
@@ -170,6 +227,7 @@ impl Default for MarkdownStyle {
 
             link: Style::new().fg(accent).add_modifier(Modifier::UNDERLINED),
             link_prefix: "🔗 ",
+            link_formatter: None,
 
             quote: Style::new().fg(dim),
             quote_alignment: Alignment::Left,

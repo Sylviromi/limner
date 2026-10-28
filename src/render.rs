@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::layout;
-use crate::style::{Alignment, MarkdownStyle};
+use crate::style::{Alignment, LinkSpans, MarkdownStyle};
 
 /// Metadata about an image encountered during rendering.
 #[derive(Debug, Clone)]
@@ -60,6 +60,7 @@ pub fn render_markdown(input: &str, style: &MarkdownStyle, width: u16) -> Render
         pen_img_line: None,
         link_url: None,
         link_text: String::new(),
+        link_start: None,
         is_image: false,
         pending_img_alt: String::new(),
         in_blockquote: 0,
@@ -101,6 +102,8 @@ struct Renderer<'a> {
 
     link_url: Option<String>,
     link_text: String,
+    /// Index in `spans` where the current link's text starts.
+    link_start: Option<usize>,
     is_image: bool,
     pending_img_alt: String,
 
@@ -276,6 +279,7 @@ impl<'a> Renderer<'a> {
                         self.current_style(),
                     ));
                 }
+                self.link_start = Some(self.spans.len());
             }
             Tag::Image { dest_url, .. } => {
                 self.is_image = true;
@@ -453,14 +457,27 @@ impl<'a> Renderer<'a> {
     }
 
     fn finalize_link(&mut self) {
-        if let Some(url) = self.link_url.take() {
-            let text = std::mem::take(&mut self.link_text);
-            self.links.push(LinkInfo {
-                line_index: usize::MAX,
-                url,
-                text,
+        let start = self.link_start.take();
+        let Some(url) = self.link_url.take() else {
+            return;
+        };
+        let text = std::mem::take(&mut self.link_text);
+        if let (Some(formatter), Some(start)) = (&self.style.link_formatter, start) {
+            // A hard break inside the link already flushed its first part.
+            let spans = self.spans.split_off(start.min(self.spans.len()));
+            let formatted = formatter.format(&LinkSpans {
+                index: self.links.len(),
+                url: &url,
+                text: &text,
+                spans: &spans,
             });
+            self.spans.extend(formatted);
         }
+        self.links.push(LinkInfo {
+            line_index: usize::MAX,
+            url,
+            text,
+        });
     }
 
     fn finalize_image(&mut self) {
@@ -793,6 +810,57 @@ mod tests {
         assert_eq!(result.links.len(), 1);
         assert_eq!(result.links[0].url, "https://ex.com");
         assert_eq!(result.links[0].text, "text");
+    }
+
+    fn hinted_style() -> MarkdownStyle {
+        MarkdownStyle {
+            link_prefix: "",
+            link_formatter: Some(crate::LinkFormatter::new(|link| {
+                let mut spans = vec![Span::raw(format!("[{}:{}] ", link.index, link.text))];
+                spans.extend_from_slice(link.spans);
+                spans
+            })),
+            ..default_style()
+        }
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn link_formatter_replaces_link_spans() {
+        let result = render_markdown(
+            "see [one](https://a.com) and [**two**](https://b.com)!",
+            &hinted_style(),
+            80,
+        );
+        assert_eq!(
+            line_text(&result.lines[0]),
+            "see [0:one] one and [1:two] two!"
+        );
+        // The original spans keep their link (and bold) styling.
+        let two = result.lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "two")
+            .unwrap();
+        assert_eq!(two.style, default_style().bold.patch(default_style().link));
+        assert_eq!(result.links.len(), 2);
+        assert_eq!(result.links[1].url, "https://b.com");
+        assert_eq!(result.links[1].text, "two");
+    }
+
+    #[test]
+    fn link_formatter_survives_hard_break_and_image_links() {
+        let result = render_markdown("[a  \nb](https://a.com)", &hinted_style(), 80);
+        assert_eq!(result.links.len(), 1);
+        let result = render_markdown(
+            "[![alt](img.png)](https://a.com) after",
+            &hinted_style(),
+            80,
+        );
+        assert_eq!(result.images.len(), 1);
     }
 
     #[test]
