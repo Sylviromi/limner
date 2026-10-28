@@ -5,53 +5,59 @@ use ratatui::prelude::{Color, Modifier, Style};
 use ratatui::symbols::{border, line};
 use ratatui::text::Span;
 
-type LinkFormatterFn = dyn Fn(&LinkSpans<'_>) -> Vec<Span<'static>> + Send + Sync;
+type SpanFormatterFn = dyn Fn(&ElementSpans<'_>) -> Vec<Span<'static>> + Send + Sync;
 
-/// A link as handed to a [`LinkFormatter`].
+/// A link or image placeholder as handed to a [`SpanFormatter`].
 #[derive(Debug, Clone, Copy)]
-pub struct LinkSpans<'a> {
-    /// Position of the link in `RenderResult::links`.
+pub struct ElementSpans<'a> {
+    /// Position of the element in `RenderResult::links` / `RenderResult::images`.
     pub index: usize,
     pub url: &'a str,
-    /// The link's plain text.
+    /// The link's plain text, or the image's alt text.
     pub text: &'a str,
-    /// The link's rendered spans, already styled with `MarkdownStyle::link`.
+    /// The rendered spans, already styled (`MarkdownStyle::link` / `image`),
+    /// including `image_prefix` for images.
     pub spans: &'a [Span<'static>],
 }
 
-/// Custom rendering for links, e.g. to add a hint label in front of each one.
+/// Custom rendering for links or image placeholders, e.g. to put a hint label
+/// in front of each one.
 ///
-/// The closure gets each link and returns the spans to draw in its place:
+/// The closure gets each element and returns the spans to draw in its place:
 ///
 /// ```rust
-/// use limner::{LinkFormatter, MarkdownStyle};
+/// use limner::{MarkdownStyle, SpanFormatter};
 /// use ratatui::text::Span;
 ///
+/// let hint = SpanFormatter::new(|el| {
+///     let mut spans = vec![Span::raw(format!("[{}] ", el.index + 1))];
+///     spans.extend_from_slice(el.spans);
+///     spans
+/// });
 /// let style = MarkdownStyle {
-///     link_formatter: Some(LinkFormatter::new(|link| {
-///         let mut spans = vec![Span::raw(format!("[{}] ", link.index + 1))];
-///         spans.extend_from_slice(link.spans);
-///         spans
-///     })),
+///     link_formatter: Some(hint.clone()),
+///     image_formatter: Some(hint),
 ///     ..MarkdownStyle::default()
 /// };
 /// ```
 #[derive(Clone)]
-pub struct LinkFormatter(Arc<LinkFormatterFn>);
+pub struct SpanFormatter(Arc<SpanFormatterFn>);
 
-impl LinkFormatter {
-    pub fn new(f: impl Fn(&LinkSpans<'_>) -> Vec<Span<'static>> + Send + Sync + 'static) -> Self {
+impl SpanFormatter {
+    pub fn new(
+        f: impl Fn(&ElementSpans<'_>) -> Vec<Span<'static>> + Send + Sync + 'static,
+    ) -> Self {
         Self(Arc::new(f))
     }
 
-    pub(crate) fn format(&self, link: &LinkSpans<'_>) -> Vec<Span<'static>> {
-        (self.0)(link)
+    pub(crate) fn format(&self, element: &ElementSpans<'_>) -> Vec<Span<'static>> {
+        (self.0)(element)
     }
 }
 
-impl fmt::Debug for LinkFormatter {
+impl fmt::Debug for SpanFormatter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("LinkFormatter(..)")
+        f.write_str("SpanFormatter(..)")
     }
 }
 
@@ -162,7 +168,7 @@ pub struct MarkdownStyle {
     pub link_prefix: &'static str,
     /// Replaces each link's spans (after `link_prefix`), or `None` to draw
     /// links as-is.
-    pub link_formatter: Option<LinkFormatter>,
+    pub link_formatter: Option<SpanFormatter>,
 
     // ── Blockquotes ─────────────────────────────────────────────
     /// Style applied to blockquote text.
@@ -177,6 +183,9 @@ pub struct MarkdownStyle {
     pub image: Style,
     /// Static string prepended to every image (e.g. `"🖼 "`).
     pub image_prefix: &'static str,
+    /// Replaces each tracked image placeholder's spans (images inside tables
+    /// aren't tracked and keep the default), or `None` to draw them as-is.
+    pub image_formatter: Option<SpanFormatter>,
 
     // ── Lists ───────────────────────────────────────────────────
     /// Bullet character for unordered lists.
@@ -235,6 +244,7 @@ impl Default for MarkdownStyle {
 
             image: Style::new().fg(green),
             image_prefix: "🖼 ",
+            image_formatter: None,
 
             list_bullet: "• ",
             ordered_template: "{}. ",

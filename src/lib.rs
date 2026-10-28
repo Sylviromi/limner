@@ -44,7 +44,7 @@ pub mod render_image;
 
 pub use pulldown_cmark;
 pub use render::{render_markdown, render_markdown_with_extra, ImageInfo, LinkInfo, RenderResult};
-pub use style::{Alignment, LinkFormatter, LinkSpans, MarkdownStyle};
+pub use style::{Alignment, ElementSpans, MarkdownStyle, SpanFormatter};
 
 // Compile the README's examples as doctests so they stay correct
 // (`cargo test --all-features`; the image example needs `image-protocol`).

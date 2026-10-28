@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::layout;
-use crate::style::{Alignment, LinkSpans, MarkdownStyle};
+use crate::style::{Alignment, ElementSpans, MarkdownStyle};
 
 /// Metadata about an image encountered during rendering.
 #[derive(Debug, Clone)]
@@ -465,7 +465,7 @@ impl<'a> Renderer<'a> {
         if let (Some(formatter), Some(start)) = (&self.style.link_formatter, start) {
             // A hard break inside the link already flushed its first part.
             let spans = self.spans.split_off(start.min(self.spans.len()));
-            let formatted = formatter.format(&LinkSpans {
+            let formatted = formatter.format(&ElementSpans {
                 index: self.links.len(),
                 url: &url,
                 text: &text,
@@ -509,7 +509,16 @@ impl<'a> Renderer<'a> {
             self.flush_paragraph(self.current_style());
         }
 
-        let mut line = Line::from(vec![Span::styled(display, self.style.image)]);
+        let mut spans = vec![Span::styled(display, self.style.image)];
+        if let Some(formatter) = &self.style.image_formatter {
+            spans = formatter.format(&ElementSpans {
+                index: self.images.len(),
+                url: &url,
+                text: &alt,
+                spans: &spans,
+            });
+        }
+        let mut line = Line::from(spans);
         line.alignment = Self::map_alignment(self.block_alignment);
         self.output.push(line);
         let current = self.output.len() - 1;
@@ -813,13 +822,15 @@ mod tests {
     }
 
     fn hinted_style() -> MarkdownStyle {
+        let hint = crate::SpanFormatter::new(|el| {
+            let mut spans = vec![Span::raw(format!("[{}:{}] ", el.index, el.text))];
+            spans.extend_from_slice(el.spans);
+            spans
+        });
         MarkdownStyle {
             link_prefix: "",
-            link_formatter: Some(crate::LinkFormatter::new(|link| {
-                let mut spans = vec![Span::raw(format!("[{}:{}] ", link.index, link.text))];
-                spans.extend_from_slice(link.spans);
-                spans
-            })),
+            link_formatter: Some(hint.clone()),
+            image_formatter: Some(hint),
             ..default_style()
         }
     }
@@ -849,6 +860,14 @@ mod tests {
         assert_eq!(result.links.len(), 2);
         assert_eq!(result.links[1].url, "https://b.com");
         assert_eq!(result.links[1].text, "two");
+    }
+
+    #[test]
+    fn image_formatter_replaces_placeholder() {
+        let result = render_markdown("![one](a.png)\n\n![two](b.png)", &hinted_style(), 80);
+        let line = &result.lines[result.images[1].line_index];
+        assert_eq!(line_text(line), "[1:two] 🖼 two");
+        assert_eq!(line.spans[1].style, default_style().image);
     }
 
     #[test]

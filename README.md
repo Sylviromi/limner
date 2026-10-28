@@ -83,9 +83,11 @@ about 50 lines — start there. The things worth knowing:
 - **Links and images come back as metadata.** `RenderResult::links` and
   `RenderResult::images` carry the URL and the index of the line they're on,
   for click handling or placing images.
-- **Customise links with `MarkdownStyle::link_formatter`.** A closure that gets
-  each link (its index in `RenderResult::links`, URL, text and spans) and returns
-  the spans to draw instead, e.g. to put a hint label in front of every link.
+- **Customise links and images with `MarkdownStyle::link_formatter` /
+  `image_formatter`.** A `SpanFormatter` closure gets each link or image
+  placeholder (its index in `RenderResult::links` / `images`, URL, text and
+  spans) and returns the spans to draw instead, e.g. to put a hint label in
+  front of each one.
 
 ```sh
 cargo run --example viewer -- README.md
