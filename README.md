@@ -236,14 +236,14 @@ cell text. Style them with `table_border` (any `ratatui::symbols::line::Set`),
 
 With the `image-protocol` feature, images in markdown (`![alt](url)`) can be
 drawn with the terminal's native graphics protocol (Kitty, Sixel, or iTerm2).
-They're tracked as `ImageInfo` metadata. An `ImageStore` keeps everything
-else: you download and decode images, report them to the store, and before
-drawing each frame `prepare()` reserves rows in the rendered lines and returns
-`ImagePlacement`s telling you where to draw each image inside `terminal.draw()`:
+They're tracked as `ImageInfo` metadata, and an `ImageStore` does the rest:
+you download and decode images and report them to the store; each frame it lays
+them out between the text lines and draws them.
 
 ```rust
 use limner::render_image::{halfblock_picker, img_crate::DynamicImage, ImageStore};
 use limner::{render_markdown, MarkdownStyle};
+use ratatui::{buffer::Buffer, layout::Rect};
 
 // Once, at startup (`Picker::from_query_stdio()` picks the best protocol).
 let mut store = ImageStore::new(halfblock_picker()).with_spinner();
@@ -257,27 +257,35 @@ for img in &result.images {
     }
 }
 
-// Every frame: lay out a fresh copy of the lines, then draw the images with
-// `SlicedImage::new(store.get(&p.url).unwrap(), position)`.
+// Every frame: lay out a fresh copy of the lines, draw them as a wrapped
+// `Paragraph` scrolled by `scroll` rows, then draw the images on top.
+let area = Rect::new(0, 0, 80, 24);
+let scroll = 0;
 let mut lines = result.lines.clone();
-let placements = store.prepare(&mut lines, &result.images, 80, 10);
-assert_eq!(placements.len(), 1);
+let placements = store.prepare(&mut lines, &result.images, area.width, 10);
+// frame.render_widget(Paragraph::new(lines).wrap(..).scroll((scroll, 0)), area);
+let mut buf = Buffer::empty(area); // inside `terminal.draw`: `frame.buffer_mut()`
+let hits = store.render(&mut buf, area, &placements, scroll);
+assert_eq!(hits.len(), 1); // where each image landed, e.g. to make it clickable
 ```
 
-While an image is loading or failed, its placeholder line stays as rendered.
-To show something else, opt in when creating the store:
+Options, all opt-in (without them images look as they always did):
 
 - `with_spinner()` puts an animated spinner in front of the placeholder of
   loading images; call `store.tick()` on a timer to animate it.
 - `with_loading_line(|p| ...)` and `with_failed_line(|p| ...)` return your own
   line, from `p.info` (url, alt), `p.placeholder` and `p.frame`.
+- `keep_placeholders()` keeps each placeholder line (alt text, link hint
+  labels from `image_formatter`) above its image.
 
-`store.version()` changes whenever `prepare()` would give a different result,
-so it can go into the key of a layout cache. The lower-level
-`prepare_inline_images()` still works with your own caches; moving from it
-is covered in [`CHANGELOG.md`](CHANGELOG.md#migrating-to-imagestore). See
-[`examples/demo.rs`](examples/demo.rs) for image loading and drawing while
-scrolling.
+Images re-fit when the width changes. `store.retain(|url| ...)` / `clear()` free
+images you no longer show, and `store.version()` changes whenever `prepare()`
+would give a different result, so it can go into a layout cache key.
+
+The lower-level `prepare_inline_images()` still works with your own caches;
+[`CHANGELOG.md`](CHANGELOG.md#migrating-to-imagestore) covers moving to
+`ImageStore`. See [`examples/demo.rs`](examples/demo.rs) for background loading
+with a spinner.
 
 ## License
 
