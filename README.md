@@ -273,6 +273,7 @@ Options, all opt-in (without them images look as they always did):
 
 - `with_spinner()` puts an animated spinner in front of the placeholder of
   loading images; call `store.tick()` on a timer to animate it.
+  `with_spinner_frames(&["◐", "◓", "◑", "◒"])` uses your own frames.
 - `with_loading_line(|p| ...)` and `with_failed_line(|p| ...)` return your own
   line, from `p.info` (url, alt), `p.placeholder` and `p.frame`.
 - `keep_placeholders()` keeps each placeholder line (alt text, link hint

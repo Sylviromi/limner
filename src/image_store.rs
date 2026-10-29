@@ -111,15 +111,18 @@ impl ImageStore {
     /// Show a spinner in front of the placeholder of images that are loading.
     /// Call [`tick`](Self::tick) to animate it.
     pub fn with_spinner(self) -> Self {
-        self.with_loading_line(|p| {
-            let style = p
-                .placeholder
-                .spans
-                .first()
-                .map(|s| s.style)
-                .unwrap_or_default();
-            let frame = SPINNER[p.frame % SPINNER.len()];
-            let mut spans = vec![Span::styled(format!("{frame} "), style)];
+        self.with_spinner_frames(&SPINNER)
+    }
+
+    /// Like [`with_spinner`](Self::with_spinner) with your own animation
+    /// frames, e.g. `&["◐", "◓", "◑", "◒"]`; one frame per [`tick`](Self::tick).
+    pub fn with_spinner_frames(self, frames: &'static [&'static str]) -> Self {
+        self.with_loading_line(move |p| {
+            let mut spans = Vec::with_capacity(p.placeholder.spans.len() + 1);
+            if let Some(frame) = frames.get(p.frame % frames.len().max(1)) {
+                let style = p.placeholder.spans.first().map(|s| s.style);
+                spans.push(Span::styled(format!("{frame} "), style.unwrap_or_default()));
+            }
             spans.extend(p.placeholder.spans.iter().cloned());
             Line::from(spans)
         })
@@ -413,6 +416,29 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.starts_with("⠙ ") && l.contains("cat")));
+    }
+
+    #[test]
+    fn custom_spinner_frames_cycle() {
+        let mut s = store().with_spinner_frames(&["◐", "◓"]);
+        s.start("a.png");
+        let firsts: Vec<String> = (0..3)
+            .map(|_| {
+                let (lines, _) = prepare(&mut s);
+                s.tick();
+                lines.into_iter().find(|l| l.contains("cat")).unwrap()
+            })
+            .collect();
+        assert!(firsts[0].starts_with("◐ ") && firsts[1].starts_with("◓ "));
+        assert_eq!(firsts[0], firsts[2]);
+
+        let mut s = store().with_spinner_frames(&[]);
+        s.start("a.png");
+        assert_eq!(
+            prepare(&mut s).0,
+            prepare(&mut store()).0,
+            "no frames: plain"
+        );
     }
 
     #[test]

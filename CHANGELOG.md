@@ -18,8 +18,9 @@ code that uses them. `ImageStore` is new and optional; see
   stay failed until `retry_failed`, so `start` is safe to call every frame),
   re-fitting images when the width changes, and freeing memory (`retain` /
   `clear`).
-- Opt-in placeholders while images load or fail: `with_spinner()`,
-  `with_loading_line()`, `with_failed_line()`. Without them, images look
+- Opt-in placeholders while images load or fail: `with_spinner()` (or
+  `with_spinner_frames()` with your own frames), `with_loading_line()` for any
+  line you like, `with_failed_line()`. Without them, images look
   exactly as before.
 - `keep_placeholders()`: keep each image's placeholder line (alt text, link
   hint labels from `image_formatter`) above the image once it is drawn.
