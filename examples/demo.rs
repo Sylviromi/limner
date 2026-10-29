@@ -2,7 +2,9 @@
 //!
 //! Run: `cargo run --example demo`
 //!
-//! Controls: Up/Down to scroll, Q/Esc to quit.
+//! Controls: Up/Down to scroll, Q/Esc to quit. With `--features image-protocol`:
+//! P keeps image placeholders above images, R reloads every image (to watch
+//! the loading spinner again). Resize the terminal to see images re-fit.
 
 use std::io::stdout;
 
@@ -80,7 +82,32 @@ fn sections(
         s.to_string()
     }
 
+    // Hint labels like a link-hint UI would draw; `P` keeps them above images.
+    let hint = limner::SpanFormatter::new(|el| {
+        let mut spans = vec![Span::styled(
+            format!("[{}] ", el.index + 1),
+            Style::new().fg(Color::Yellow),
+        )];
+        spans.extend_from_slice(el.spans);
+        spans
+    });
+
     let sections = vec![
+        // 0 ── Image states (first, so they show right away) ───
+        Section {
+            label: "Images — loading, failed, kept placeholders",
+            text: txt("A slow image (3 s), to watch the loading spinner (R reloads):\n\n\
+                 ![slow Rust logo](https://rust-lang.org/logos/rust-logo-512x512.png?slow)\n\n\
+                 An image that can't load:\n\n\
+                 ![missing picture](https://example.invalid/missing.png)\n\n\
+                 The `[n]` labels come from `image_formatter`. Press P to keep them \
+                 above the images once loaded.")
+            .leak(),
+            style: MarkdownStyle {
+                image_formatter: Some(hint),
+                ..base.clone()
+            },
+        },
         // 1 ── Left (default baseline) ──────────────────────────
         Section {
             label: "Left (default)",
@@ -361,7 +388,7 @@ fn main() -> std::io::Result<()> {
     let mut scroll: u16 = 0;
 
     #[cfg(feature = "image-protocol")]
-    let (mut store, (image_tx, image_rx)) = {
+    let (picker, (image_tx, image_rx)) = {
         use limner::render_image::ProtocolType;
 
         let mut picker = limner::render_image::Picker::from_query_stdio()
@@ -372,11 +399,15 @@ fn main() -> std::io::Result<()> {
             picker.set_protocol_type(ProtocolType::Kitty);
         }
 
-        (
-            limner::render_image::ImageStore::new(picker).with_spinner(),
-            std::sync::mpsc::channel(),
-        )
+        (picker, std::sync::mpsc::channel())
     };
+    #[cfg(feature = "image-protocol")]
+    let mut keep_placeholders = false;
+    // Every download result, so the store can be rebuilt when `P` toggles.
+    #[cfg(feature = "image-protocol")]
+    let mut loaded = std::collections::HashMap::new();
+    #[cfg(feature = "image-protocol")]
+    let mut store = new_store(&picker, keep_placeholders, &loaded);
     #[cfg(feature = "image-protocol")]
     terminal.draw(|_| {})?;
 
@@ -397,6 +428,9 @@ fn main() -> std::io::Result<()> {
                 if store.start(&img.url) {
                     let (url, tx) = (img.url.clone(), image_tx.clone());
                     std::thread::spawn(move || {
+                        if url.ends_with("?slow") {
+                            std::thread::sleep(std::time::Duration::from_secs(3));
+                        }
                         let decoded = fetch_image(&url).and_then(|bytes| {
                             limner::render_image::img_crate::load_from_memory(&bytes).ok()
                         });
@@ -405,7 +439,8 @@ fn main() -> std::io::Result<()> {
                 }
             }
             for (url, decoded) in image_rx.try_iter() {
-                store.finish(&url, decoded);
+                store.finish(&url, decoded.clone());
+                loaded.insert(url, decoded);
             }
             store.prepare(&mut lines, &images, content_width, 10)
         };
@@ -418,6 +453,11 @@ fn main() -> std::io::Result<()> {
             .title_bottom(format!(
                 " {scroll}/{line_count} lines · {img_count} images · {link_count} links ",
             ));
+        #[cfg(feature = "image-protocol")]
+        let block = block.title_bottom(format!(
+            " P: keep placeholders ({}) · R: reload images ",
+            if keep_placeholders { "on" } else { "off" }
+        ));
         let inner = block.inner(area);
         scroll = scroll.min(line_count.saturating_sub(inner.height as usize) as u16);
 
@@ -449,6 +489,16 @@ fn main() -> std::io::Result<()> {
                 KeyCode::PageDown => scroll = scroll.saturating_add(10),
                 KeyCode::Home => scroll = 0,
                 KeyCode::End => scroll = line_count.saturating_sub(1) as u16,
+                #[cfg(feature = "image-protocol")]
+                KeyCode::Char('p') => {
+                    keep_placeholders = !keep_placeholders;
+                    store = new_store(&picker, keep_placeholders, &loaded);
+                }
+                #[cfg(feature = "image-protocol")]
+                KeyCode::Char('r') => {
+                    loaded.clear();
+                    store.clear();
+                }
                 _ => {}
             }
         }
@@ -457,6 +507,33 @@ fn main() -> std::io::Result<()> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
     Ok(())
+}
+
+/// A store with the demo's options, already holding the images `loaded` so far.
+#[cfg(feature = "image-protocol")]
+fn new_store(
+    picker: &limner::render_image::Picker,
+    keep_placeholders: bool,
+    loaded: &std::collections::HashMap<
+        String,
+        Option<limner::render_image::img_crate::DynamicImage>,
+    >,
+) -> limner::render_image::ImageStore {
+    let mut store = limner::render_image::ImageStore::new(picker.clone())
+        .with_spinner()
+        .with_failed_line(|p| {
+            Line::from(Span::styled(
+                format!("⚠ couldn't load {}", p.info.alt),
+                Style::new().fg(Color::Red),
+            ))
+        });
+    if keep_placeholders {
+        store = store.keep_placeholders();
+    }
+    for (url, image) in loaded {
+        store.finish(url, image.clone());
+    }
+    store
 }
 
 #[cfg(feature = "image-protocol")]
