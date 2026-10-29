@@ -15,6 +15,8 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::ImageInfo;
 
+pub use crate::image_store::{ImageStore, PendingImage};
+
 /// Re-export the `image` crate for callers that need to decode images.
 pub use image as img_crate;
 
@@ -441,53 +443,9 @@ pub fn prepare_inline_images(
     max_cols: u16,
     max_rows: u16,
 ) -> Vec<ImagePlacement> {
-    prepare_inline_images_with(
-        lines,
-        images,
-        image_cache,
-        sliced_protocol_cache,
-        picker,
-        font_size,
-        max_cols,
-        max_rows,
-        |_| None,
-    )
-}
-
-/// Same as [`prepare_inline_images`], but images that aren't ready yet (not in
-/// either cache) get their placeholder line from `pending`; `None` keeps the
-/// placeholder as rendered.
-///
-/// Call it on a fresh copy of the rendered lines every tick to animate a
-/// loading indicator without re-rendering the markdown:
-///
-/// ```rust,ignore
-/// let frame = ["⠋", "⠙", "⠹", "⠸"][tick % 4];
-/// let placements = prepare_inline_images_with(
-///     &mut lines, &result.images, &mut cache, &mut protocols,
-///     &picker, &font_size, width, 10,
-///     |img| loading.contains(&img.url)
-///         .then(|| Line::from(format!("{frame} loading {}", img.alt))),
-/// );
-/// ```
-#[allow(clippy::too_many_arguments)]
-pub fn prepare_inline_images_with(
-    lines: &mut Vec<Line<'static>>,
-    images: &[ImageInfo],
-    image_cache: &mut HashMap<String, img_crate::DynamicImage>,
-    sliced_protocol_cache: &mut HashMap<String, SlicedProtocol>,
-    picker: &Picker,
-    font_size: &FontSize,
-    max_cols: u16,
-    max_rows: u16,
-    pending: impl Fn(&ImageInfo) -> Option<Line<'static>>,
-) -> Vec<ImagePlacement> {
-    let mut indexed: Vec<(usize, &ImageInfo)> = images.iter().enumerate().collect();
-    indexed.sort_by_key(|a| a.1.line_index);
-
     // Pass 1 — lazily create SlicedProtocols for newly cached images.
     // Consumes the DynamicImage from image_cache on success.
-    for (_, img) in &indexed {
+    for img in images {
         if !sliced_protocol_cache.contains_key(&img.url) {
             if let Some(dyn_img) = image_cache.remove(&img.url) {
                 let (cols, rows) = fit_cell_size(&dyn_img, font_size, max_cols, max_rows);
@@ -500,6 +458,21 @@ pub fn prepare_inline_images_with(
         }
     }
 
+    place_images(lines, images, sliced_protocol_cache, |_, _| None)
+}
+
+/// Pass 2 of [`prepare_inline_images`], shared with [`ImageStore`]: replace the
+/// placeholder of each image that has a protocol with empty lines and record
+/// its placement. Other placeholders get `pending`'s line, if it returns one.
+pub(crate) fn place_images(
+    lines: &mut Vec<Line<'static>>,
+    images: &[ImageInfo],
+    protocols: &HashMap<String, SlicedProtocol>,
+    pending: impl Fn(&ImageInfo, &Line<'static>) -> Option<Line<'static>>,
+) -> Vec<ImagePlacement> {
+    let mut indexed: Vec<&ImageInfo> = images.iter().collect();
+    indexed.sort_by_key(|img| img.line_index);
+
     // Pass 2 — replace placeholder lines with empty space, record placements.
     // `cursor` tracks the next free line so images sharing the same original
     // `line_index` (e.g. multiple extra images at line 0) don't overlap.
@@ -507,12 +480,12 @@ pub fn prepare_inline_images_with(
     let mut offset: isize = 0;
     let mut cursor: isize = 0;
 
-    for (_, img) in &indexed {
+    for img in indexed {
         let adjusted_line = (img.line_index as isize + offset) as usize;
 
-        let Some(sliced) = sliced_protocol_cache.get(&img.url) else {
+        let Some(sliced) = protocols.get(&img.url) else {
             if let Some(slot) = lines.get_mut(adjusted_line) {
-                if let Some(mut line) = pending(img) {
+                if let Some(mut line) = pending(img, slot) {
                     line.alignment = line.alignment.or(slot.alignment);
                     *slot = line;
                 }
@@ -553,48 +526,4 @@ pub fn prepare_inline_images_with(
     }
 
     placements
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{render_markdown, MarkdownStyle};
-
-    fn prepare(pending: impl Fn(&ImageInfo) -> Option<Line<'static>>) -> Vec<String> {
-        let result = render_markdown(
-            "before\n\n![cat](a.png)\n\n![dog](b.png)\n\nafter",
-            &MarkdownStyle::default(),
-            40,
-        );
-        let mut lines = result.lines;
-        let placements = prepare_inline_images_with(
-            &mut lines,
-            &result.images,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &halfblock_picker(),
-            &FontSize::new(10, 20),
-            40,
-            10,
-            pending,
-        );
-        assert!(placements.is_empty());
-        lines.iter().map(|l| l.to_string()).collect()
-    }
-
-    #[test]
-    fn pending_hook_replaces_only_the_images_it_picks() {
-        let lines = prepare(|img| {
-            (img.url == "a.png").then(|| Line::from(format!("⠋ loading {}", img.alt)))
-        });
-        assert!(lines.iter().any(|l| l == "⠋ loading cat"));
-        assert!(lines.iter().any(|l| l.contains("dog")));
-        assert!(lines.iter().any(|l| l == "before") && lines.iter().any(|l| l == "after"));
-    }
-
-    #[test]
-    fn without_a_hook_placeholders_stay() {
-        let lines = prepare(|_| None);
-        assert!(lines.iter().any(|l| l.contains("cat")) && lines.iter().any(|l| l.contains("dog")));
-    }
 }

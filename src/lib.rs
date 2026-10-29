@@ -40,6 +40,8 @@ pub mod style;
 #[cfg(feature = "syntax-highlighting")]
 pub mod highlight;
 #[cfg(feature = "image-protocol")]
+mod image_store;
+#[cfg(feature = "image-protocol")]
 pub mod render_image;
 
 pub use pulldown_cmark;

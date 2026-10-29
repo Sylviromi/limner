@@ -236,62 +236,47 @@ cell text. Style them with `table_border` (any `ratatui::symbols::line::Set`),
 
 With the `image-protocol` feature, images in markdown (`![alt](url)`) can be
 drawn with the terminal's native graphics protocol (Kitty, Sixel, or iTerm2).
-They're tracked as `ImageInfo` metadata; before drawing each frame, call
-`prepare_inline_images()`. It reserves rows in the rendered lines for each
-image and returns `ImagePlacement`s telling you where to draw them inside
-`terminal.draw()`:
+They're tracked as `ImageInfo` metadata. An `ImageStore` keeps everything
+else: you download and decode images, report them to the store, and before
+drawing each frame `prepare()` reserves rows in the rendered lines and returns
+`ImagePlacement`s telling you where to draw each image inside `terminal.draw()`:
 
 ```rust
-use std::collections::HashMap;
-
-use limner::render_image::{self, img_crate::DynamicImage, ImagePlacement, Picker, SlicedProtocol};
+use limner::render_image::{halfblock_picker, img_crate::DynamicImage, ImageStore};
 use limner::{render_markdown, MarkdownStyle};
-use ratatui::text::Line;
 
-fn layout_with_images(
-    content: &str,
-    width: u16,
-    picker: &Picker,
-    // URL → decoded image; populating it (downloading, decoding) is up to you.
-    image_cache: &mut HashMap<String, DynamicImage>,
-    protocol_cache: &mut HashMap<String, SlicedProtocol>,
-) -> (Vec<Line<'static>>, Vec<ImagePlacement>) {
-    let mut result = render_markdown(content, &MarkdownStyle::default(), width);
-    let placements = render_image::prepare_inline_images(
-        &mut result.lines,
-        &result.images,
-        image_cache,
-        protocol_cache,
-        picker,
-        &picker.font_size(),
-        width,
-        10, // maximum image height, in rows
-    );
-    (result.lines, placements)
+// Once, at startup (`Picker::from_query_stdio()` picks the best protocol).
+let mut store = ImageStore::new(halfblock_picker()).with_spinner();
+
+let result = render_markdown("![a cat](cat.png)", &MarkdownStyle::default(), 80);
+for img in &result.images {
+    if store.start(&img.url) {
+        // Download + decode in the background, then report the result
+        // (`None` if it failed):
+        store.finish(&img.url, Some(DynamicImage::new_rgb8(64, 64)));
+    }
 }
+
+// Every frame: lay out a fresh copy of the lines, then draw the images with
+// `SlicedImage::new(store.get(&p.url).unwrap(), position)`.
+let mut lines = result.lines.clone();
+let placements = store.prepare(&mut lines, &result.images, 80, 10);
+assert_eq!(placements.len(), 1);
 ```
 
-Create the `Picker` once at startup with `Picker::from_query_stdio()` (fall
-back to `render_image::halfblock_picker()` if the query fails). See
-[`examples/demo.rs`](examples/demo.rs) for image loading, caching, and drawing
-while scrolling.
+While an image is loading or failed, its placeholder line stays as rendered.
+To show something else, opt in when creating the store:
 
-Images that aren't in either cache yet keep their placeholder line. To show
-something else while they load (a spinner, a progress label), call
-`prepare_inline_images_with()` instead: its extra closure returns the line to
-draw for a pending image, or `None` to keep the placeholder. Render the
-markdown once and call it on a fresh copy of the lines each tick to animate it:
+- `with_spinner()` puts an animated spinner in front of the placeholder of
+  loading images; call `store.tick()` on a timer to animate it.
+- `with_loading_line(|p| ...)` and `with_failed_line(|p| ...)` return your own
+  line, from `p.info` (url, alt), `p.placeholder` and `p.frame`.
 
-```rust,ignore
-let frame = ["⠋", "⠙", "⠹", "⠸"][tick % 4];
-let mut lines = rendered.lines.clone();
-let placements = render_image::prepare_inline_images_with(
-    &mut lines, &rendered.images, image_cache, protocol_cache,
-    picker, &picker.font_size(), width, 10,
-    |img| loading.contains(&img.url)
-        .then(|| Line::from(format!("{frame} loading {}", img.alt))),
-);
-```
+`store.version()` changes whenever `prepare()` would give a different result,
+so it can go into the key of a layout cache. The lower-level
+`prepare_inline_images()` still works with your own caches. See
+[`examples/demo.rs`](examples/demo.rs) for image loading and drawing while
+scrolling.
 
 ## License
 
