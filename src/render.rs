@@ -710,6 +710,9 @@ impl<'a> Renderer<'a> {
 /// Like [`render_markdown`] but also accepts a list of external image URLs
 /// to include in the result (e.g. images extracted from HTML or media
 /// attachments that don't appear in the markdown itself).
+///
+/// Each extra image gets its own placeholder line at the top of the output
+/// and comes after the markdown's own images in `images`.
 pub fn render_markdown_with_extra(
     input: &str,
     style: &MarkdownStyle,
@@ -717,15 +720,45 @@ pub fn render_markdown_with_extra(
     extra_images: &[String],
 ) -> RenderResult {
     let mut result = render_markdown(input, style, width);
+    let mut extra: Vec<ImageInfo> = Vec::new();
     for url in extra_images {
-        if !result.images.iter().any(|i| &i.url == url) {
-            result.images.push(ImageInfo {
+        if !result.images.iter().chain(&extra).any(|i| &i.url == url) {
+            extra.push(ImageInfo {
                 url: url.clone(),
                 alt: String::new(),
-                line_index: 0,
+                line_index: extra.len(),
             });
         }
     }
+    if extra.is_empty() {
+        return result;
+    }
+
+    let placeholders = extra.iter().enumerate().map(|(k, img)| {
+        let spans = vec![Span::styled(
+            format!("{}image", style.image_prefix),
+            style.image,
+        )];
+        Line::from(match &style.image_formatter {
+            Some(formatter) => formatter.format(&ElementSpans {
+                index: result.images.len() + k,
+                url: &img.url,
+                text: "",
+                spans: &spans,
+            }),
+            None => spans,
+        })
+    });
+    let placeholders: Vec<Line<'static>> = placeholders.collect();
+    let shift = placeholders.len();
+    result.lines.splice(0..0, placeholders);
+    for img in &mut result.images {
+        img.line_index += shift;
+    }
+    for link in &mut result.links {
+        link.line_index += shift;
+    }
+    result.images.extend(extra);
     result
 }
 
