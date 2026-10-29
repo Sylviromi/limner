@@ -1,13 +1,21 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+All notable changes to limner. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and limner uses
+[semantic versioning](https://semver.org/) (before 1.0, a minor bump may break).
+
+## [0.9.0] - 2026-10-29
+
+Most apps only need to recompile: the items marked **BREAKING** only affect
+code that uses them. `ImageStore` is new and optional; see
+[Migrating to `ImageStore`](#migrating-to-imagestore) below.
 
 ### Added
 
 - `render_image::ImageStore`: one type that holds an app's inline images and
-  does everything after the download: layout (`prepare`), drawing and
-  click areas (`render`), loading and failed state (`start` / `finish`; failed images stay
-  failed until `retry_failed`, so `start` is safe to call every frame),
+  does everything after the download: layout (`prepare`), drawing and click
+  areas (`render`), loading and failed state (`start` / `finish`; failed images
+  stay failed until `retry_failed`, so `start` is safe to call every frame),
   re-fitting images when the width changes, and freeing memory (`retain` /
   `clear`).
 - Opt-in placeholders while images load or fail: `with_spinner()`,
@@ -15,41 +23,33 @@
   exactly as before.
 - `keep_placeholders()`: keep each image's placeholder line (alt text, link
   hint labels from `image_formatter`) above the image once it is drawn.
-- `ImagePlacement::row`: the visual row an image starts on, after wrapping.
+- **BREAKING** `ImagePlacement::row`: the visual row an image starts on, after
+  wrapping. Code that builds an `ImagePlacement` by hand must set it
+  (placements returned by limner already have it).
 
 ### Changed
 
 - `compute_image_signed_positions` works out all positions in one pass over
   the lines instead of re-wrapping the text above every image; long documents
   with several images lay out much faster. Results are the same.
+- `prepare_inline_images()` keeps its signature and results. `ImageStore` is
+  the recommended way from now on; the old function will be deprecated in a
+  later release, with the guide below as the migration path.
 
-### Fixed
+### Removed
 
-- `render_markdown_with_extra`: extra images used to have no line of their own
-  and overwrote the first lines of text once loaded. Each now gets a placeholder
-  line at the top, so they show while loading and never cover text.
-
-### Breaking changes
-
-Most apps only need to recompile. Check these if you use them:
-
-- **Removed functions deprecated since 0.5:** `make_clipped_protocol`,
+- **BREAKING** Functions deprecated since 0.5: `make_clipped_protocol`,
   `make_scrolled_protocol`, `compute_image_render_rects` and `ImageRenderRect`.
   Draw with `ImageStore::render`, or with `make_sliced_protocol` +
   `compute_image_signed_positions` + `SlicedImage` as recommended since 0.5.
-- **`render_markdown_with_extra`** now adds one placeholder line per extra image
-  at the top (see Fixed), so the other lines, images and links move down by that
-  many lines. Indices in the result are already shifted; only code that assumed
-  the first text line is line 0 is affected.
-- **`ImagePlacement`** has a new `row` field: code that builds one by hand must
-  set it (placements returned by limner already have it).
 
-### Unchanged
+### Fixed
 
-- `prepare_inline_images()` and `compute_image_signed_positions()` keep their
-  signatures and results. `ImageStore` is the recommended way from now on; the
-  old functions will be deprecated in a later release, with the guide below as
-  the migration path.
+- **BREAKING** `render_markdown_with_extra`: extra images used to have no line
+  of their own and overwrote the first lines of text once loaded. Each now gets
+  a placeholder line at the top, so they show while loading and never cover
+  text. Lines, images and links of the markdown move down by one line per extra
+  image (indices in the result are already shifted).
 
 ### Migrating to `ImageStore`
 
@@ -118,3 +118,5 @@ Notes:
   second) and redraw.
 - The store keeps loaded images until you call `retain` or `clear`, e.g.
   `store.retain(|url| on_screen.contains(url))` when the user leaves a page.
+
+[0.9.0]: https://github.com/Sylviromi/limner/tree/v0.9.0
