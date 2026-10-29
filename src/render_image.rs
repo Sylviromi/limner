@@ -301,7 +301,7 @@ pub(crate) fn row_starts(lines: &[Line], width: u16) -> Vec<usize> {
     let mut row = 0;
     rows.push(0);
     for line in lines {
-        row += if line.width() <= width as usize {
+        row += if width > 0 && line.width() <= width as usize {
             1
         } else {
             Paragraph::new(line.clone())
@@ -343,6 +343,24 @@ mod tests {
 
     fn texts(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn row_starts_match_a_wrapped_paragraph() {
+        let lines: Vec<Line<'static>> = ["", "short", "a line long enough to wrap twice", ""]
+            .into_iter()
+            .map(Line::from)
+            .collect();
+        for width in [0, 1, 12, 80] {
+            let wrapped = Paragraph::new(lines.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(width);
+            assert_eq!(
+                row_starts(&lines, width).last(),
+                Some(&wrapped),
+                "width {width}"
+            );
+        }
     }
 
     #[test]
