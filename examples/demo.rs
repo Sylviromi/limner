@@ -431,25 +431,7 @@ fn main() -> std::io::Result<()> {
             );
 
             #[cfg(feature = "image-protocol")]
-            {
-                use limner::render_image::{
-                    compute_image_signed_positions, ImageViewport, SlicedImage,
-                };
-
-                let viewport = ImageViewport {
-                    content: inner,
-                    scroll,
-                };
-                let render_positions =
-                    compute_image_signed_positions(&placements, &lines, &viewport);
-
-                for r in &render_positions {
-                    let Some(sliced) = store.get(&r.url) else {
-                        continue;
-                    };
-                    f.render_widget(SlicedImage::new(sliced, r.position), inner);
-                }
-            }
+            store.render(f.buffer_mut(), inner, &placements, scroll);
         })?;
 
         // Poll so the spinner keeps turning while images load.
