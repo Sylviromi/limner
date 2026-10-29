@@ -157,12 +157,11 @@ impl ImageStore {
     }
 
     /// Mark `url` as loading. Returns `true` when the caller should download it:
-    /// it is neither loaded nor already loading (failed images are retried).
+    /// the store has never seen it (or forgot it). Safe to call every frame:
+    /// loading, loaded and failed images return `false` (see
+    /// [`retry_failed`](Self::retry_failed)).
     pub fn start(&mut self, url: &str) -> bool {
-        if matches!(
-            self.entries.get(url),
-            Some(Entry::Loading | Entry::Ready { .. })
-        ) {
+        if self.entries.contains_key(url) {
             return false;
         }
         self.entries.insert(url.to_string(), Entry::Loading);
@@ -194,9 +193,13 @@ impl ImageStore {
     /// Forget the images whose URL `keep` rejects, freeing their memory (e.g.
     /// keep only the article on screen). They are downloaded again if needed.
     pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
-        let before = self.entries.len();
-        self.entries.retain(|url, _| keep(url));
-        self.changed_if(self.entries.len() != before);
+        self.retain_entries(|url, _| keep(url));
+    }
+
+    /// Let failed images be downloaded again on their next
+    /// [`start`](Self::start), e.g. once the network is back.
+    pub fn retry_failed(&mut self) {
+        self.retain_entries(|_, entry| !matches!(entry, Entry::Failed));
     }
 
     /// Forget every image.
@@ -337,6 +340,12 @@ impl ImageStore {
         }
     }
 
+    fn retain_entries(&mut self, keep: impl FnMut(&String, &mut Entry) -> bool) {
+        let before = self.entries.len();
+        self.entries.retain(keep);
+        self.changed_if(self.entries.len() != before);
+    }
+
     fn has_hooks(&self) -> bool {
         self.loading_line.is_some() || self.failed_line.is_some()
     }
@@ -414,7 +423,14 @@ mod tests {
         s.finish("a.png", None);
         let (lines, _) = prepare(&mut s);
         assert!(lines.iter().any(|l| l == "⚠ cat"));
-        assert!(s.start("a.png"), "failed images are retried");
+        assert!(
+            !s.start("a.png"),
+            "no retry loop when start runs every frame"
+        );
+        let version = s.version();
+        s.retry_failed();
+        assert_ne!(s.version(), version);
+        assert!(s.start("a.png"), "retried once asked");
     }
 
     #[test]

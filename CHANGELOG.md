@@ -6,7 +6,8 @@
 
 - `render_image::ImageStore`: one type that holds an app's inline images and
   does everything after the download: layout (`prepare`), drawing and
-  click areas (`render`), loading and failed state (`start` / `finish`),
+  click areas (`render`), loading and failed state (`start` / `finish`; failed images stay
+  failed until `retry_failed`, so `start` is safe to call every frame),
   re-fitting images when the width changes, and freeing memory (`retain` /
   `clear`).
 - Opt-in placeholders while images load or fail: `with_spinner()`,
@@ -64,7 +65,7 @@ code.
 | your own "downloading" set | (inside the store) |
 | `if !cache.contains_key(url) && pending.insert(url) { download }` | `if store.start(url) { download }` |
 | `image_cache.insert(url, image)` | `store.finish(url, Some(image))` |
-| download/decode failed | `store.finish(url, None)` (retried on the next `start`) |
+| download/decode failed | `store.finish(url, None)` (stays failed; `store.retry_failed()` to try again) |
 | `prepare_inline_images(&mut lines, &images, &mut image_cache, &mut protocol_cache, &picker, &picker.font_size(), width, 10)` | `store.prepare(&mut lines, &images, width, 10)` |
 | `compute_image_signed_positions` + `protocol_cache.get` + `SlicedImage` loop | `store.render(frame.buffer_mut(), area, &placements, scroll)` |
 | `protocol_cache.get(url)` | `store.get(url)` |
