@@ -276,6 +276,23 @@ back to `render_image::halfblock_picker()` if the query fails). See
 [`examples/demo.rs`](examples/demo.rs) for image loading, caching, and drawing
 while scrolling.
 
+Images that aren't in either cache yet keep their placeholder line. To show
+something else while they load (a spinner, a progress label), call
+`prepare_inline_images_with()` instead: its extra closure returns the line to
+draw for a pending image, or `None` to keep the placeholder. Render the
+markdown once and call it on a fresh copy of the lines each tick to animate it:
+
+```rust,ignore
+let frame = ["⠋", "⠙", "⠹", "⠸"][tick % 4];
+let mut lines = rendered.lines.clone();
+let placements = render_image::prepare_inline_images_with(
+    &mut lines, &rendered.images, image_cache, protocol_cache,
+    picker, &picker.font_size(), width, 10,
+    |img| loading.contains(&img.url)
+        .then(|| Line::from(format!("{frame} loading {}", img.alt))),
+);
+```
+
 ## License
 
 MIT
