@@ -361,9 +361,8 @@ fn main() -> std::io::Result<()> {
     let mut scroll: u16 = 0;
 
     #[cfg(feature = "image-protocol")]
-    let mut state = {
+    let (mut store, (image_tx, image_rx)) = {
         use limner::render_image::ProtocolType;
-        use std::collections::HashMap;
 
         let mut picker = limner::render_image::Picker::from_query_stdio()
             .unwrap_or_else(|_| limner::render_image::halfblock_picker());
@@ -373,11 +372,10 @@ fn main() -> std::io::Result<()> {
             picker.set_protocol_type(ProtocolType::Kitty);
         }
 
-        ImageDemoState {
-            image_cache: HashMap::new(),
-            sliced_protocol_cache: HashMap::new(),
-            picker,
-        }
+        (
+            limner::render_image::ImageStore::new(picker).with_spinner(),
+            std::sync::mpsc::channel(),
+        )
     };
     #[cfg(feature = "image-protocol")]
     terminal.draw(|_| {})?;
@@ -394,28 +392,22 @@ fn main() -> std::io::Result<()> {
 
         #[cfg(feature = "image-protocol")]
         let placements = {
+            // Download in the background; the spinner shows meanwhile.
             for img in &images {
-                if !state.image_cache.contains_key(&img.url) {
-                    let url = img.url.clone();
-                    if let Some(bytes) = fetch_image(&url) {
-                        use limner::render_image::img_crate;
-                        if let Ok(dyn_img) = img_crate::load_from_memory(&bytes) {
-                            state.image_cache.insert(url, dyn_img);
-                        }
-                    }
+                if store.start(&img.url) {
+                    let (url, tx) = (img.url.clone(), image_tx.clone());
+                    std::thread::spawn(move || {
+                        let decoded = fetch_image(&url).and_then(|bytes| {
+                            limner::render_image::img_crate::load_from_memory(&bytes).ok()
+                        });
+                        let _ = tx.send((url, decoded));
+                    });
                 }
             }
-            let font_size = state.picker.font_size();
-            limner::render_image::prepare_inline_images(
-                &mut lines,
-                &images,
-                &mut state.image_cache,
-                &mut state.sliced_protocol_cache,
-                &state.picker,
-                &font_size,
-                content_width,
-                10,
-            )
+            for (url, decoded) in image_rx.try_iter() {
+                store.finish(&url, decoded);
+            }
+            store.prepare(&mut lines, &images, content_width, 10)
         };
 
         let line_count = lines.len();
@@ -452,7 +444,7 @@ fn main() -> std::io::Result<()> {
                     compute_image_signed_positions(&placements, &lines, &viewport);
 
                 for r in &render_positions {
-                    let Some(sliced) = state.sliced_protocol_cache.get(&r.url) else {
+                    let Some(sliced) = store.get(&r.url) else {
                         continue;
                     };
                     f.render_widget(SlicedImage::new(sliced, r.position), inner);
@@ -460,6 +452,12 @@ fn main() -> std::io::Result<()> {
             }
         })?;
 
+        // Poll so the spinner keeps turning while images load.
+        if !event::poll(std::time::Duration::from_millis(100))? {
+            #[cfg(feature = "image-protocol")]
+            store.tick();
+            continue;
+        }
         if let Event::Key(key) = event::read()? {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
@@ -477,13 +475,6 @@ fn main() -> std::io::Result<()> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
     Ok(())
-}
-
-#[cfg(feature = "image-protocol")]
-struct ImageDemoState {
-    image_cache: std::collections::HashMap<String, limner::render_image::img_crate::DynamicImage>,
-    sliced_protocol_cache: std::collections::HashMap<String, limner::render_image::SlicedProtocol>,
-    picker: limner::render_image::Picker,
 }
 
 #[cfg(feature = "image-protocol")]
