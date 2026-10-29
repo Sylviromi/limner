@@ -274,7 +274,8 @@ To show something else, opt in when creating the store:
 
 `store.version()` changes whenever `prepare()` would give a different result,
 so it can go into the key of a layout cache. The lower-level
-`prepare_inline_images()` still works with your own caches. See
+`prepare_inline_images()` still works with your own caches; moving from it
+is covered in [`CHANGELOG.md`](CHANGELOG.md#migrating-to-imagestore). See
 [`examples/demo.rs`](examples/demo.rs) for image loading and drawing while
 scrolling.
 
