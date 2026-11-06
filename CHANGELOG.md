@@ -4,6 +4,17 @@ All notable changes to limner. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and limner uses
 [semantic versioning](https://semver.org/) (before 1.0, a minor bump may break).
 
+## [Unreleased]
+
+### Added
+
+- `render_image::ImageSlot` and `ImageStore::layout()`: the row of every
+  image from the last `prepare()` call, loaded or not, instead of only the
+  ones already drawn (`ImagePlacement`).
+- `ImageStore::visible()` and `ImageStore::start_visible()`: find out which
+  images are on screen (or close to it, via a row margin) to load them lazily
+  instead of downloading a whole article's images up front.
+
 ## [0.9.0] - 2026-10-29
 
 Most apps only need to recompile: the items marked **BREAKING** only affect

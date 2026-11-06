@@ -49,6 +49,33 @@ pub struct ImagePlacement {
     pub alignment: Option<Alignment>,
 }
 
+/// Row-level slot of one image within the rendered lines, whether it has
+/// already been drawn or is still showing a one-line placeholder (loading,
+/// failed, or not even requested yet).
+///
+/// Returned by [`ImageStore::layout`], computed as a side effect of
+/// [`ImageStore::prepare`]. Use it (e.g. via [`ImageStore::visible`]) to find
+/// out which images are on screen, for lazy loading.
+#[derive(Debug, Clone)]
+pub struct ImageSlot {
+    /// The image URL.
+    pub url: String,
+    /// 0-based index within the rendered line buffer where this slot starts
+    /// (the image itself when loaded, its placeholder line otherwise).
+    pub line: usize,
+    /// Visual row the slot starts on, with the lines wrapped at the width
+    /// passed to `prepare`.
+    pub row: usize,
+    /// Number of terminal rows the slot occupies: the image's height once
+    /// loaded, 1 (its placeholder line) otherwise.
+    pub cell_rows: u16,
+    /// Horizontal alignment within the content area (None = left-aligned).
+    pub alignment: Option<Alignment>,
+    /// Whether the image has been placed (`true`) or is still a placeholder
+    /// line (`false`): loading, failed, or never [`started`](ImageStore::start).
+    pub loaded: bool,
+}
+
 /// Compute the optimal cell dimensions for an image, fitting within
 /// `max_cols × max_rows` while preserving aspect ratio.
 ///
@@ -230,6 +257,7 @@ pub fn prepare_inline_images(
         false,
         max_cols,
     )
+    .0
 }
 
 /// Pass 2 of image layout, shared with [`ImageStore`]: reserve `size_of(url)`
@@ -237,6 +265,9 @@ pub fn prepare_inline_images(
 /// it with `keep_placeholder` — and record its placement. Placeholders of the
 /// other images get `pending`'s line, if it returns one. `width` is the width
 /// the lines are drawn at, used for [`ImagePlacement::row`].
+///
+/// Also returns an [`ImageSlot`] per image (placed or not), with its row in
+/// the final, wrapped line buffer — used to tell which images are visible.
 pub(crate) fn place_images(
     lines: &mut Vec<Line<'static>>,
     images: &[ImageInfo],
@@ -244,12 +275,13 @@ pub(crate) fn place_images(
     pending: impl Fn(&ImageInfo, &Line<'static>) -> Option<Line<'static>>,
     keep_placeholder: bool,
     width: u16,
-) -> Vec<ImagePlacement> {
+) -> (Vec<ImagePlacement>, Vec<ImageSlot>) {
     let mut sorted: Vec<&ImageInfo> = images.iter().collect();
     sorted.sort_by_key(|img| img.line_index);
 
     // `offset` is how far earlier images pushed this one's line down.
     let mut placements = Vec::new();
+    let mut pending_slots = Vec::new();
     let mut offset = 0;
     for img in sorted {
         let at = img.line_index + offset;
@@ -258,10 +290,19 @@ pub(crate) fn place_images(
         };
         let size = size_of(&img.url).filter(|s| s.width > 0 && s.height > 0);
         let Some(size) = size else {
+            let alignment = slot.alignment;
             if let Some(mut line) = pending(img, slot) {
-                line.alignment = line.alignment.or(slot.alignment);
+                line.alignment = line.alignment.or(alignment);
                 *slot = line;
             }
+            pending_slots.push(ImageSlot {
+                url: img.url.clone(),
+                line: at,
+                row: 0,
+                cell_rows: 1,
+                alignment,
+                loaded: false,
+            });
             continue;
         };
 
@@ -285,13 +326,29 @@ pub(crate) fn place_images(
         });
     }
 
-    if !placements.is_empty() {
+    let mut slots: Vec<ImageSlot> = placements
+        .iter()
+        .map(|p| ImageSlot {
+            url: p.url.clone(),
+            line: p.line_start,
+            row: 0,
+            cell_rows: p.cell_rows,
+            alignment: p.alignment,
+            loaded: true,
+        })
+        .chain(pending_slots)
+        .collect();
+
+    if !slots.is_empty() {
         let rows = row_starts(lines, width);
         for p in &mut placements {
             p.row = rows[p.line_start];
         }
+        for s in &mut slots {
+            s.row = rows[s.line];
+        }
     }
-    placements
+    (placements, slots)
 }
 
 /// Visual row each line starts on once wrapped at `width`, plus the total
