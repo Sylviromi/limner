@@ -11,7 +11,7 @@ use ratatui::widgets::Widget;
 
 use crate::render_image::{
     fit_cell_size, image_position, img_crate::DynamicImage, make_sliced_protocol, place_images,
-    ImagePlacement, Picker, SlicedImage, SlicedProtocol,
+    ImagePlacement, ImageSlot, Picker, SlicedImage, SlicedProtocol,
 };
 use crate::ImageInfo;
 
@@ -83,6 +83,17 @@ struct Fitted {
 ///
 /// Without [`with_spinner`](Self::with_spinner) / the line hooks, images that
 /// are loading or failed keep the placeholder `render_markdown` produced.
+///
+/// To download only images near the viewport instead of a whole article's
+/// worth up front, replace the eager loop above with
+/// [`start_visible`](Self::start_visible), called after `prepare` (which
+/// refreshes the rows it uses):
+///
+/// ```rust,ignore
+/// for url in store.start_visible(scroll, area.height, area.height) {
+///     spawn_download(url); // ends with `store.finish(&url, decoded)`
+/// }
+/// ```
 pub struct ImageStore {
     picker: Picker,
     entries: HashMap<String, Entry>,
@@ -91,6 +102,7 @@ pub struct ImageStore {
     keep_placeholders: bool,
     frame: usize,
     version: u64,
+    layout: Vec<ImageSlot>,
 }
 
 impl ImageStore {
@@ -105,6 +117,7 @@ impl ImageStore {
             keep_placeholders: false,
             frame: 0,
             version: 0,
+            layout: Vec::new(),
         }
     }
 
@@ -196,6 +209,7 @@ impl ImageStore {
     /// Forget the images whose URL `keep` rejects, freeing their memory (e.g.
     /// keep only the article on screen). They are downloaded again if needed.
     pub fn retain(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.layout.retain(|slot| keep(&slot.url));
         self.retain_entries(|url, _| keep(url));
     }
 
@@ -234,6 +248,9 @@ impl ImageStore {
     ///
     /// `width` is the width the lines will be drawn at; images fit within
     /// `width × max_rows` cells and are re-fitted when either changes.
+    ///
+    /// Also refreshes [`layout`](Self::layout) with every image's row,
+    /// loaded or not, for [`visible`](Self::visible) / [`start_visible`](Self::start_visible).
     pub fn prepare(
         &mut self,
         lines: &mut Vec<Line<'static>>,
@@ -246,7 +263,7 @@ impl ImageStore {
         }
 
         let this = &*self;
-        place_images(
+        let (placements, slots) = place_images(
             lines,
             images,
             |url| this.get(url).map(SlicedProtocol::size),
@@ -266,7 +283,40 @@ impl ImageStore {
             },
             self.keep_placeholders,
             width,
-        )
+        );
+        self.layout = slots;
+        placements
+    }
+
+    /// Row-level layout of every image passed to the last [`prepare`](Self::prepare)
+    /// call, loaded or not. Empty before `prepare` is called the first time.
+    pub fn layout(&self) -> &[ImageSlot] {
+        &self.layout
+    }
+
+    /// URLs of images from the last [`prepare`](Self::prepare) call whose
+    /// slot lies within `margin` rows of the `scroll..scroll + height`
+    /// viewport — a reasonable set to lazily load, or to keep loaded while
+    /// forgetting the rest (see [`retain`](Self::retain)).
+    pub fn visible(&self, scroll: u16, height: u16, margin: u16) -> impl Iterator<Item = &str> {
+        let top = usize::from(scroll).saturating_sub(usize::from(margin));
+        let bottom = usize::from(scroll) + usize::from(height) + usize::from(margin);
+        self.layout.iter().filter_map(move |slot| {
+            let visible = slot.row < bottom && slot.row + usize::from(slot.cell_rows) > top;
+            visible.then_some(slot.url.as_str())
+        })
+    }
+
+    /// [`start`](Self::start)s every image [`visible`](Self::visible) near
+    /// the `scroll..scroll + height` viewport (extended by `margin` rows) and
+    /// returns the URLs the caller must now download — the ones `start`
+    /// returns `true` for. Safe to call every frame.
+    pub fn start_visible(&mut self, scroll: u16, height: u16, margin: u16) -> Vec<String> {
+        let urls: Vec<String> = self
+            .visible(scroll, height, margin)
+            .map(str::to_string)
+            .collect();
+        urls.into_iter().filter(|url| self.start(url)).collect()
     }
 
     /// Draw the visible images of `placements` into `area`, the area the
@@ -528,6 +578,99 @@ mod tests {
         assert_eq!(hits[0].area.height, p.cell_rows - 1);
         let hits = s.render(&mut buf, area, &placements, 100);
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn layout_reports_rows_for_loaded_and_pending_images() {
+        let mut s = store();
+        s.finish("a.png", Some(image())); // cat: loaded
+        s.start("b.png"); // dog: loading
+        let (_, placements) = prepare(&mut s);
+        assert_eq!(
+            placements.len(),
+            1,
+            "only the loaded image gets a placement"
+        );
+
+        let layout = s.layout();
+        assert_eq!(layout.len(), 2, "pending images get a slot too");
+        let cat = layout.iter().find(|slot| slot.url == "a.png").unwrap();
+        let dog = layout.iter().find(|slot| slot.url == "b.png").unwrap();
+
+        assert!(cat.loaded);
+        assert_eq!(cat.row, placements[0].row);
+        assert_eq!(cat.cell_rows, placements[0].cell_rows);
+
+        assert!(!dog.loaded);
+        assert_eq!(dog.cell_rows, 1, "a pending image is one placeholder line");
+        assert!(dog.row > cat.row, "dog comes after the (multi-row) cat");
+    }
+
+    #[test]
+    fn visible_finds_images_within_the_viewport_and_margin() {
+        let mut s = store();
+        s.finish("a.png", Some(image()));
+        s.start("b.png");
+        prepare(&mut s);
+
+        let layout = s.layout().to_vec();
+        let row = |url: &str| layout.iter().find(|slot| slot.url == url).unwrap().row as u16;
+        let (cat_row, dog_row) = (row("a.png"), row("b.png"));
+        assert!(dog_row > cat_row);
+
+        // A viewport only covering the cat.
+        let visible: Vec<&str> = s.visible(0, cat_row + 1, 0).collect();
+        assert_eq!(visible, vec!["a.png"]);
+
+        // Widening it with a margin reaches the dog too.
+        let margin = dog_row - cat_row;
+        let visible: Vec<&str> = s.visible(0, cat_row + 1, margin).collect();
+        assert_eq!(visible.len(), 2);
+        assert!(visible.contains(&"a.png") && visible.contains(&"b.png"));
+
+        // Scrolled past both: nothing visible.
+        assert_eq!(s.visible(dog_row + 100, 5, 0).count(), 0);
+    }
+
+    #[test]
+    fn start_visible_only_starts_images_in_range() {
+        let mut s = store();
+        s.finish("a.png", Some(image())); // already loaded
+        prepare(&mut s);
+        let dog_row = s
+            .layout()
+            .iter()
+            .find(|slot| slot.url == "b.png")
+            .unwrap()
+            .row as u16;
+
+        // Dog is out of view, cat is already loaded: nothing to start.
+        assert!(s.start_visible(0, 1, 0).is_empty());
+
+        // Widen the viewport until it reaches the dog.
+        assert_eq!(
+            s.start_visible(0, dog_row + 1, 0),
+            vec!["b.png".to_string()]
+        );
+
+        // It's loading now, so asking again starts nothing.
+        assert!(s.start_visible(0, dog_row + 1, 0).is_empty());
+    }
+
+    #[test]
+    fn retain_also_forgets_layout_slots() {
+        let mut s = store();
+        s.finish("a.png", Some(image()));
+        s.finish("b.png", Some(image()));
+        prepare(&mut s);
+        assert_eq!(s.layout().len(), 2);
+
+        s.retain(|url| url == "b.png");
+        assert_eq!(s.layout().len(), 1);
+        assert_eq!(s.layout()[0].url, "b.png");
+
+        s.clear();
+        assert!(s.layout().is_empty());
     }
 
     #[test]
