@@ -4,7 +4,7 @@ All notable changes to limner. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and limner uses
 [semantic versioning](https://semver.org/) (before 1.0, a minor bump may break).
 
-## [Unreleased]
+## [0.10.0] - 2026-11-06
 
 ### Added
 
@@ -17,6 +17,11 @@ All notable changes to limner. The format follows
 - `ImageStore::total_rows()`: the wrapped height of the lines from the last
   `prepare()` call, i.e. the `max_scroll` content height. Previously only
   `lines.len()` (pre-wrap, pre-image-reservation) was available.
+
+### Fixed
+
+- Image rows are now counted like ratatui does when the width is 0, so
+  `ImagePlacement::row` matches a wrapped `Paragraph`.
 
 ## [0.9.0] - 2026-10-29
 
@@ -134,4 +139,5 @@ Notes:
 - The store keeps loaded images until you call `retain` or `clear`, e.g.
   `store.retain(|url| on_screen.contains(url))` when the user leaves a page.
 
+[0.10.0]: https://github.com/Sylviromi/limner/tree/v0.10.0
 [0.9.0]: https://github.com/Sylviromi/limner/tree/v0.9.0
