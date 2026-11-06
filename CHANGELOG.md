@@ -14,6 +14,9 @@ All notable changes to limner. The format follows
 - `ImageStore::visible()` and `ImageStore::start_visible()`: find out which
   images are on screen (or close to it, via a row margin) to load them lazily
   instead of downloading a whole article's images up front.
+- `ImageStore::total_rows()`: the wrapped height of the lines from the last
+  `prepare()` call, i.e. the `max_scroll` content height. Previously only
+  `lines.len()` (pre-wrap, pre-image-reservation) was available.
 
 ## [0.9.0] - 2026-10-29
 

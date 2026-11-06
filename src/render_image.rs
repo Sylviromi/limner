@@ -267,7 +267,8 @@ pub fn prepare_inline_images(
 /// the lines are drawn at, used for [`ImagePlacement::row`].
 ///
 /// Also returns an [`ImageSlot`] per image (placed or not), with its row in
-/// the final, wrapped line buffer — used to tell which images are visible.
+/// the final, wrapped line buffer — used to tell which images are visible —
+/// and the total number of wrapped rows `lines` occupies, for `max_scroll`.
 pub(crate) fn place_images(
     lines: &mut Vec<Line<'static>>,
     images: &[ImageInfo],
@@ -275,7 +276,7 @@ pub(crate) fn place_images(
     pending: impl Fn(&ImageInfo, &Line<'static>) -> Option<Line<'static>>,
     keep_placeholder: bool,
     width: u16,
-) -> (Vec<ImagePlacement>, Vec<ImageSlot>) {
+) -> (Vec<ImagePlacement>, Vec<ImageSlot>, usize) {
     let mut sorted: Vec<&ImageInfo> = images.iter().collect();
     sorted.sort_by_key(|img| img.line_index);
 
@@ -339,16 +340,15 @@ pub(crate) fn place_images(
         .chain(pending_slots)
         .collect();
 
-    if !slots.is_empty() {
-        let rows = row_starts(lines, width);
-        for p in &mut placements {
-            p.row = rows[p.line_start];
-        }
-        for s in &mut slots {
-            s.row = rows[s.line];
-        }
+    let rows = row_starts(lines, width);
+    for p in &mut placements {
+        p.row = rows[p.line_start];
     }
-    (placements, slots)
+    for s in &mut slots {
+        s.row = rows[s.line];
+    }
+    let total_rows = *rows.last().unwrap_or(&0);
+    (placements, slots, total_rows)
 }
 
 /// Visual row each line starts on once wrapped at `width`, plus the total

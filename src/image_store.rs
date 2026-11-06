@@ -103,6 +103,7 @@ pub struct ImageStore {
     frame: usize,
     version: u64,
     layout: Vec<ImageSlot>,
+    total_rows: usize,
 }
 
 impl ImageStore {
@@ -118,6 +119,7 @@ impl ImageStore {
             frame: 0,
             version: 0,
             layout: Vec::new(),
+            total_rows: 0,
         }
     }
 
@@ -250,7 +252,8 @@ impl ImageStore {
     /// `width × max_rows` cells and are re-fitted when either changes.
     ///
     /// Also refreshes [`layout`](Self::layout) with every image's row,
-    /// loaded or not, for [`visible`](Self::visible) / [`start_visible`](Self::start_visible).
+    /// loaded or not, for [`visible`](Self::visible) / [`start_visible`](Self::start_visible),
+    /// and [`total_rows`](Self::total_rows) with the content's wrapped height.
     pub fn prepare(
         &mut self,
         lines: &mut Vec<Line<'static>>,
@@ -263,7 +266,7 @@ impl ImageStore {
         }
 
         let this = &*self;
-        let (placements, slots) = place_images(
+        let (placements, slots, total_rows) = place_images(
             lines,
             images,
             |url| this.get(url).map(SlicedProtocol::size),
@@ -285,6 +288,7 @@ impl ImageStore {
             width,
         );
         self.layout = slots;
+        self.total_rows = total_rows;
         placements
     }
 
@@ -292,6 +296,14 @@ impl ImageStore {
     /// call, loaded or not. Empty before `prepare` is called the first time.
     pub fn layout(&self) -> &[ImageSlot] {
         &self.layout
+    }
+
+    /// Total number of wrapped screen rows the lines from the last
+    /// [`prepare`](Self::prepare) call occupy — the content height to use as
+    /// `max_scroll`, e.g. with `Paragraph::scroll`. `0` before `prepare` is
+    /// called the first time.
+    pub fn total_rows(&self) -> usize {
+        self.total_rows
     }
 
     /// URLs of images from the last [`prepare`](Self::prepare) call whose
@@ -655,6 +667,21 @@ mod tests {
 
         // It's loading now, so asking again starts nothing.
         assert!(s.start_visible(0, dog_row + 1, 0).is_empty());
+    }
+
+    #[test]
+    fn total_rows_matches_the_wrapped_line_count() {
+        let mut s = store();
+        let (plain_lines, _) = prepare(&mut store());
+        assert_eq!(s.total_rows(), 0, "nothing prepared yet");
+
+        prepare(&mut s);
+        assert_eq!(s.total_rows(), plain_lines.len(), "no wrapping at width 40");
+
+        // A loaded image reserves extra rows, growing the total.
+        s.finish("a.png", Some(image()));
+        prepare(&mut s);
+        assert!(s.total_rows() > plain_lines.len());
     }
 
     #[test]
